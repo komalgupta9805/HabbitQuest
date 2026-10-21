@@ -1,4 +1,6 @@
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
+import importlib
 import os
 os.environ["HABITQUEST_DATABASE_URL"] = "sqlite:///./habitquest-test.db"
 import pytest
@@ -22,6 +24,69 @@ def test_habit_crud_and_user_isolation():
     assert updated.json()["name"]=="Edited"
     assert client.delete(f"/habits/{created['id']}",headers=b).status_code==404
     assert client.delete(f"/habits/{created['id']}",headers=a).status_code==204
+
+def test_archive_restore_keeps_history_and_excludes_paused_dates():
+    headers=register(); item=habit(headers)
+    today=date.today().isoformat()
+    client.post(f"/habits/{item['id']}/complete",headers=headers,json={})
+    assert client.post(f"/habits/{item['id']}/archive",headers=headers).status_code==200
+    assert client.get(f"/days/{today}",headers=headers).json()["scheduled"]==0
+    assert client.get("/habits",headers=headers).json()[0]["completed_days"]==1
+    assert client.post(f"/habits/{item['id']}/restore",headers=headers).status_code==200
+    assert client.get(f"/days/{today}",headers=headers).json()["completed"]==1
+
+def test_period_metrics_exclude_pre_creation_and_use_saved_completions():
+    headers=register(); item=habit(headers)
+    before=client.get("/dashboard",headers=headers).json()
+    assert before["weekly_consistency"]["completed"]==0
+    assert before["weekly_consistency"]["scheduled"]==1
+    client.post(f"/habits/{item['id']}/complete",headers=headers,json={})
+    after=client.get("/dashboard",headers=headers).json()
+    assert after["weekly_consistency"]["percentage"]==100
+    assert after["monthly_completion"]["percentage"]==100
+    assert client.get("/analytics",headers=headers).json()["daily"][-1]["percentage"]==100
+
+def test_editing_schedule_preserves_previous_dates():
+    headers=register(); item=habit(headers)
+    previous=date.today()-timedelta(days=1)
+    with SessionLocal() as session:
+        row=session.query(Habit).filter_by(id=item["id"]).one()
+        row.created_on=previous; session.commit()
+    changed=client.put(f"/habits/{item['id']}",headers=headers,json={"name":"Read","schedule":str(date.today().weekday())})
+    assert changed.status_code==200
+    yesterday=client.get(f"/days/{previous.isoformat()}",headers=headers).json()
+    assert yesterday["scheduled"]==1
+
+def test_client_timezone_sets_analytics_day_and_rejects_invalid_zone():
+    headers=register()
+    routes=["/dashboard","/activity?days=70",f"/days/{date.today().isoformat()}","/analytics"]
+    for route in routes:
+        assert client.get(route,headers=headers).status_code==200
+    headers["X-Time-Zone"]=""
+    for route in routes:
+        assert client.get(route,headers=headers).status_code==200
+    headers["X-Time-Zone"]="Asia/Kolkata"
+    for route in routes:
+        assert client.get(route,headers=headers).status_code==200
+    headers["X-Time-Zone"]="Pacific/Kiritimati"
+    for route in routes:
+        assert client.get(route,headers=headers).status_code==200
+    assert client.get("/analytics",headers=headers).json()["daily"][-1]["label"]==datetime.now(ZoneInfo("Pacific/Kiritimati")).date().isoformat()
+    headers["X-Time-Zone"]="Invalid/Zone"
+    for route in routes:
+        response=client.get(route,headers=headers)
+        assert response.status_code==422
+        assert "X-Time-Zone" in response.json()["detail"]
+
+def test_missing_server_timezone_data_has_distinct_error(monkeypatch):
+    module=importlib.import_module("app.main")
+    def unavailable(_name): raise ZoneInfoNotFoundError("missing database")
+    monkeypatch.setattr(module,"ZoneInfo",unavailable)
+    monkeypatch.setattr(module,"available_timezones",lambda: set())
+    headers=register(); headers["X-Time-Zone"]="Asia/Kolkata"
+    response=client.get("/dashboard",headers=headers)
+    assert response.status_code==503
+    assert "time zone data is unavailable" in response.json()["detail"]
 def test_completion_undo_xp_and_duplicate_protection():
     h=register(); item=habit(h)
     assert client.post(f"/habits/{item['id']}/complete",headers=h,json={}).json()["xp"]==60
@@ -46,6 +111,11 @@ def test_weekday_schedule_and_streak_history():
     client.post(f"/habits/{item['id']}/complete",headers=h,json={})
     record=client.get("/habits",headers=h).json()[0]
     assert record["current"]==4 and record["longest"]==4
+    dashboard=client.get("/dashboard",headers=h).json()
+    assert dashboard["overall_streak"]==4 and dashboard["overall_longest_streak"]==4
+    client.request("DELETE",f"/habits/{item['id']}/complete",headers=h,json={"completed_on":date.today().isoformat()})
+    dashboard=client.get("/dashboard",headers=h).json()
+    assert dashboard["overall_streak"]==0 and dashboard["overall_longest_streak"]==3
 def test_calendar_and_date_specific_history():
     h=register(); item=habit(h); yesterday=date.today()-timedelta(days=1)
     session=SessionLocal(); session.query(Habit).filter_by(id=item["id"]).update({"created_on":yesterday}); session.commit(); session.close()
@@ -53,7 +123,10 @@ def test_calendar_and_date_specific_history():
     day=client.get(f"/days/{yesterday.isoformat()}",headers=h).json()
     assert day["completed"]==1 and day["habits"][0]["done"]
     month=client.get(f"/calendar/{yesterday.year}/{yesterday.month}",headers=h).json()
-    assert any(x["date"]==yesterday.isoformat() and x["completed"]==1 for x in month["days"])
+    assert any(x["date"]==yesterday.isoformat() and x["completed"]==1 and x["categories"]==["Study"] for x in month["days"])
+    tomorrow=date.today()+timedelta(days=1)
+    upcoming=client.get(f"/calendar/{tomorrow.year}/{tomorrow.month}",headers=h).json()
+    assert any(x["date"]==tomorrow.isoformat() and x["completed"]==0 and x["categories"]==["Study"] for x in upcoming["days"])
 def test_goal_duration_and_explicit_demo_history():
     h=register(); created=client.post("/habits",headers=h,json={"name":"DSA","description":"","category":"Study","schedule":"daily","icon":"⌘","target_days":7,"target_text":"2 questions"}).json()
     assert created["target_days"]==7 and created["target_end"]
@@ -84,3 +157,4 @@ def test_activity_cells_are_real_dates_with_known_intensity():
     assert len(result["cells"])==70 and cell["date"]==date.today().isoformat()
     assert cell["completed"]==1 and cell["scheduled"]==2 and cell["intensity"]==2
     assert result["stats"]["completed"]==1
+    assert len(client.get("/activity?days=84",headers=h).json()["cells"])==84

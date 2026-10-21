@@ -1,14 +1,15 @@
 """Local-first HabitQuest API. Dates are ISO local calendar dates; a completion earns 20 XP and undo reverses it."""
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
 import os
 from hashlib import pbkdf2_hmac
 from secrets import token_urlsafe
 from typing import Generator
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError, available_timezones
 from fastapi import Depends, FastAPI, Header, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 from sqlalchemy import Column, Date, ForeignKey, Integer, String, UniqueConstraint, create_engine, inspect, text
-from sqlalchemy.orm import Session, declarative_base, sessionmaker
+from sqlalchemy.orm import Session, declarative_base, relationship, sessionmaker
 
 DATABASE_URL = os.getenv("HABITQUEST_DATABASE_URL", "sqlite:///./habitquest.db")
 engine = create_engine(DATABASE_URL, connect_args={"check_same_thread": False})
@@ -16,7 +17,13 @@ SessionLocal = sessionmaker(bind=engine); Base = declarative_base()
 class User(Base):
     __tablename__="users"; id=Column(Integer,primary_key=True); name=Column(String(80),nullable=False); email=Column(String(160),unique=True,nullable=False); password_hash=Column(String(128),nullable=False); xp=Column(Integer,default=0,nullable=False); token=Column(String(64),unique=True,nullable=False)
 class Habit(Base):
-    __tablename__="habits"; id=Column(Integer,primary_key=True); user_id=Column(Integer,ForeignKey("users.id"),nullable=False,index=True); name=Column(String(80),nullable=False); description=Column(String(240),default="",nullable=False); category=Column(String(40),default="Personal",nullable=False); schedule=Column(String(30),default="daily",nullable=False); created_on=Column(Date,default=date.today,nullable=False); active=Column(Integer,default=1,nullable=False); icon=Column(String(12),default="✦",nullable=False); target_days=Column(Integer,default=0,nullable=False); target_text=Column(String(120),default="",nullable=False); reminder_time=Column(String(5),default="",nullable=False); is_demo=Column(Integer,default=0,nullable=False)
+    __tablename__="habits"; id=Column(Integer,primary_key=True); user_id=Column(Integer,ForeignKey("users.id"),nullable=False,index=True); name=Column(String(80),nullable=False); description=Column(String(240),default="",nullable=False); category=Column(String(40),default="Personal",nullable=False); schedule=Column(String(30),default="daily",nullable=False); created_on=Column(Date,default=date.today,nullable=False); active=Column(Integer,default=1,nullable=False); archived_on=Column(Date,nullable=True); icon=Column(String(12),default="✦",nullable=False); target_days=Column(Integer,default=0,nullable=False); target_text=Column(String(120),default="",nullable=False); reminder_time=Column(String(5),default="",nullable=False); is_demo=Column(Integer,default=0,nullable=False)
+    archive_periods=relationship("ArchivePeriod",cascade="all, delete-orphan")
+    schedule_periods=relationship("SchedulePeriod",cascade="all, delete-orphan",order_by="SchedulePeriod.started_on")
+class ArchivePeriod(Base):
+    __tablename__="archive_periods"; id=Column(Integer,primary_key=True); habit_id=Column(Integer,ForeignKey("habits.id"),nullable=False,index=True); started_on=Column(Date,nullable=False); ended_on=Column(Date,nullable=True)
+class SchedulePeriod(Base):
+    __tablename__="schedule_periods"; id=Column(Integer,primary_key=True); habit_id=Column(Integer,ForeignKey("habits.id"),nullable=False,index=True); started_on=Column(Date,nullable=False); ended_on=Column(Date,nullable=True); schedule=Column(String(30),nullable=False)
 class Completion(Base):
     __tablename__="completions"; id=Column(Integer,primary_key=True); habit_id=Column(Integer,ForeignKey("habits.id"),nullable=False,index=True); completed_on=Column(Date,nullable=False); __table_args__=(UniqueConstraint("habit_id","completed_on",name="unique_daily_completion"),)
 class RewardClaim(Base):
@@ -26,14 +33,21 @@ class Achievement(Base):
 Base.metadata.create_all(engine)
 # Lightweight backward-compatible migration for local project databases.
 _columns={c["name"] for c in inspect(engine).get_columns("habits")}
-for _name,_sql in {"active":"INTEGER NOT NULL DEFAULT 1","icon":"VARCHAR(12) NOT NULL DEFAULT '✦'","target_days":"INTEGER NOT NULL DEFAULT 0","target_text":"VARCHAR(120) NOT NULL DEFAULT ''","reminder_time":"VARCHAR(5) NOT NULL DEFAULT ''","is_demo":"INTEGER NOT NULL DEFAULT 0"}.items():
+for _name,_sql in {"active":"INTEGER NOT NULL DEFAULT 1","archived_on":"DATE","icon":"VARCHAR(12) NOT NULL DEFAULT '✦'","target_days":"INTEGER NOT NULL DEFAULT 0","target_text":"VARCHAR(120) NOT NULL DEFAULT ''","reminder_time":"VARCHAR(5) NOT NULL DEFAULT ''","is_demo":"INTEGER NOT NULL DEFAULT 0"}.items():
     if _name not in _columns:
         with engine.begin() as connection: connection.execute(text(f"ALTER TABLE habits ADD COLUMN {_name} {_sql}"))
+with engine.begin() as connection:
+    connection.execute(text("UPDATE habits SET archived_on = CURRENT_DATE WHERE active = 0 AND archived_on IS NULL"))
 app=FastAPI(title="HabitQuest API",version="1.0.0")
 app.add_middleware(CORSMiddleware,allow_origins=["http://localhost:5173","http://127.0.0.1:5173"],allow_methods=["*"],allow_headers=["*"])
 class Credentials(BaseModel): name:str=Field("",max_length=80); email:str=Field(min_length=3,max_length=160); password:str=Field(min_length=6,max_length=100)
 class HabitInput(BaseModel):
     name:str=Field(min_length=1,max_length=80); description:str=Field("",max_length=240); category:str=Field("Personal",max_length=40); schedule:str="daily"; icon:str=Field("✦",max_length=12); start_date:date|None=None; target_days:int=Field(0,ge=0,le=3650); target_text:str=Field("",max_length=120); reminder_time:str=Field("",max_length=5)
+    @field_validator("name", "category")
+    @classmethod
+    def not_blank(cls,value):
+        if not value.strip(): raise ValueError("This field cannot be blank.")
+        return value.strip()
 class CompletionInput(BaseModel): completed_on:date|None=None
 def db()->Generator[Session,None,None]:
     s=SessionLocal()
@@ -44,10 +58,26 @@ def auth(authorization:str=Header(""),s:Session=Depends(db)):
     u=s.query(User).filter_by(token=authorization.removeprefix("Bearer ")).first()
     if not u: raise HTTPException(401,"Please sign in first.")
     return u
+def client_today(x_time_zone:str=Header("")):
+    zone_name=x_time_zone.strip()
+    if not zone_name: return date.today()
+    try: return datetime.now(ZoneInfo(zone_name)).date()
+    except ZoneInfoNotFoundError:
+        if not available_timezones():
+            raise HTTPException(503,"Server time zone data is unavailable. Install the backend requirements and restart the API.")
+        raise HTTPException(422,"X-Time-Zone must be a valid IANA time zone, such as Asia/Kolkata.")
+    except ValueError:
+        raise HTTPException(422,"X-Time-Zone must be a valid IANA time zone, such as Asia/Kolkata.")
 def level(xp):
     n=xp//100+1; return {"level":n,"xp":xp,"next_level_xp":n*100,"progress":xp%100}
-def valid_schedule(x): return x=="daily" or bool(x) and all(part in "0123456" and len(part)==1 for part in x.split(","))
-def is_scheduled(h,d): return h.schedule=="daily" or str(d.weekday()) in h.schedule.split(",")
+def valid_schedule(x): return x=="daily" or bool(x) and len(x.split(","))==len(set(x.split(","))) and all(part in "0123456" and len(part)==1 for part in x.split(","))
+def is_scheduled(h,d):
+    schedule=next((p.schedule for p in h.schedule_periods if p.started_on<=d and (p.ended_on is None or d<p.ended_on)),h.schedule)
+    return schedule=="daily" or str(d.weekday()) in schedule.split(",")
+def occurs(h,d):
+    if d<h.created_on or not is_scheduled(h,d): return False
+    if any(p.started_on<=d and (p.ended_on is None or d<p.ended_on) for p in h.archive_periods): return False
+    return bool(h.active or h.archived_on is None or d<h.archived_on)
 def habits(s,u): return s.query(Habit).filter_by(user_id=u.id).order_by(Habit.id.desc()).all()
 def owned(hid,u,s):
     h=s.query(Habit).filter_by(id=hid,user_id=u.id).first()
@@ -56,22 +86,29 @@ def owned(hid,u,s):
 def dates(s,h): return {c.completed_on for c in s.query(Completion).filter_by(habit_id=h.id)}
 def streak(s,h,today=None):
     today=today or date.today(); done=dates(s,h); cursor=today
-    while cursor>=h.created_on and not is_scheduled(h,cursor): cursor-=timedelta(days=1)
+    while cursor>=h.created_on and not occurs(h,cursor): cursor-=timedelta(days=1)
     current=0
     while cursor>=h.created_on and cursor in done:
         current+=1; cursor-=timedelta(days=1)
-        while cursor>=h.created_on and not is_scheduled(h,cursor): cursor-=timedelta(days=1)
+        while cursor>=h.created_on and not occurs(h,cursor): cursor-=timedelta(days=1)
     longest=run=0; cursor=h.created_on
     while cursor<=today:
-        if is_scheduled(h,cursor): run=run+1 if cursor in done else 0; longest=max(longest,run)
+        if occurs(h,cursor): run=run+1 if cursor in done else 0; longest=max(longest,run)
         cursor+=timedelta(days=1)
     return {"current":current,"longest":longest}
-def habit_out(s,h):
+def habit_out(s,h,today=None):
+    today=today or date.today()
     done=len(dates(s,h)); end=h.created_on+timedelta(days=h.target_days-1) if h.target_days else None
-    return {"id":h.id,"name":h.name,"description":h.description,"category":h.category,"schedule":h.schedule,"created_on":h.created_on.isoformat(),"icon":h.icon,"target_days":h.target_days,"target_text":h.target_text,"reminder_time":h.reminder_time,"target_end":end.isoformat() if end else None,"completed_days":done,"goal_progress":min(100,round(100*done/h.target_days)) if h.target_days else 0,"goal_complete":bool(h.target_days and done>=h.target_days),"active":bool(h.active),"is_demo":bool(h.is_demo),"scheduled_today":is_scheduled(h,date.today()),"done_today":date.today() in dates(s,h),**streak(s,h)}
+    return {"id":h.id,"name":h.name,"description":h.description,"category":h.category,"schedule":h.schedule,"created_on":h.created_on.isoformat(),"icon":h.icon,"target_days":h.target_days,"target_text":h.target_text,"reminder_time":h.reminder_time,"target_end":end.isoformat() if end else None,"completed_days":done,"goal_progress":min(100,round(100*done/h.target_days)) if h.target_days else 0,"goal_complete":bool(h.target_days and done>=h.target_days),"active":bool(h.active),"archived_on":h.archived_on.isoformat() if h.archived_on else None,"is_demo":bool(h.is_demo),"scheduled_today":occurs(h,today),"done_today":today in dates(s,h),**streak(s,h,today)}
 def day_status(s,u,d):
-    scheduled=[h for h in habits(s,u) if h.active and is_scheduled(h,d)]
+    scheduled=[h for h in habits(s,u) if occurs(h,d)]
     return sum(d in dates(s,h) for h in scheduled),len(scheduled)
+def period_status(s,u,start,end):
+    completed=scheduled=0
+    cursor=start
+    while cursor<=end:
+        done,total=day_status(s,u,cursor); completed+=done; scheduled+=total; cursor+=timedelta(days=1)
+    return {"completed":completed,"scheduled":scheduled,"percentage":round(100*completed/scheduled) if scheduled else 0}
 def count(s,u): return s.query(Completion).join(Habit).filter(Habit.user_id==u.id).count()
 def bonus(s,u,d):
     done,total=day_status(s,u,d); key=f"daily_all:{d.isoformat()}"; claim=s.query(RewardClaim).filter_by(user_id=u.id,reward_key=key).first()
@@ -82,14 +119,25 @@ def achievements(s,u):
     have={a.code for a in s.query(Achievement).filter_by(user_id=u.id)}
     for code,yes in rules:
         if yes and code not in have: s.add(Achievement(user_id=u.id,code=code))
-def overall(s,u):
-    hs=habits(s,u); cursor=date.today(); run=0
+def overall(s,u,today=None):
+    hs=habits(s,u); cursor=today or date.today(); run=0
     while hs and cursor>=min(h.created_on for h in hs):
         done,total=day_status(s,u,cursor)
         if total and done==total: run+=1
         elif total: break
         cursor-=timedelta(days=1)
     return run
+def overall_longest(s,u,today=None):
+    hs=habits(s,u)
+    if not hs: return 0
+    cursor=min(h.created_on for h in hs); end=today or date.today(); run=longest=0
+    while cursor<=end:
+        done,total=day_status(s,u,cursor)
+        if total:
+            run=run+1 if done==total else 0
+            longest=max(longest,run)
+        cursor+=timedelta(days=1)
+    return longest
 @app.get("/health")
 def health(): return {"status":"ok"}
 @app.post("/auth/register")
@@ -107,48 +155,93 @@ def logout(u:User=Depends(auth),s:Session=Depends(db)):
 @app.get("/me")
 def me(u:User=Depends(auth)): return {"name":u.name,"email":u.email,**level(u.xp)}
 @app.get("/habits")
-def list_habits(u:User=Depends(auth),s:Session=Depends(db)): return [habit_out(s,h) for h in habits(s,u)]
+def list_habits(u:User=Depends(auth),s:Session=Depends(db),today:date=Depends(client_today)): return [habit_out(s,h,today) for h in habits(s,u)]
 @app.get("/days/{selected_day}")
-def day_view(selected_day:date,u:User=Depends(auth),s:Session=Depends(db)):
-    if selected_day>date.today(): raise HTTPException(422,"Future dates cannot be completed yet.")
+def day_view(selected_day:date,u:User=Depends(auth),s:Session=Depends(db),today:date=Depends(client_today)):
+    if selected_day>today: raise HTTPException(422,"Future dates cannot be completed yet.")
     rows=[]
     for h in habits(s,u):
-        if h.active and h.created_on<=selected_day and is_scheduled(h,selected_day):
-            rows.append({"id":h.id,"name":h.name,"description":h.description,"category":h.category,"done":selected_day in dates(s,h),**streak(s,h)})
+        if occurs(h,selected_day):
+            rows.append({"id":h.id,"name":h.name,"description":h.description,"category":h.category,"schedule":h.schedule,"icon":h.icon,"done":selected_day in dates(s,h),"can_toggle":True,**streak(s,h,today)})
     done=sum(x["done"] for x in rows)
     return {"date":selected_day.isoformat(),"completed":done,"scheduled":len(rows),"habits":rows}
 @app.get("/calendar/{year}/{month}")
-def month_view(year:int,month:int,u:User=Depends(auth),s:Session=Depends(db)):
+def month_view(year:int,month:int,u:User=Depends(auth),s:Session=Depends(db),today:date=Depends(client_today)):
     if month<1 or month>12: raise HTTPException(422,"Month must be 1 through 12.")
     first=date(year,month,1); next_month=date(year+1,1,1) if month==12 else date(year,month+1,1); cursor=first; days=[]
     while cursor<next_month:
-        done,total=day_status(s,u,cursor) if cursor<=date.today() else (0,0)
-        days.append({"date":cursor.isoformat(),"completed":done,"scheduled":total,"percentage":round(100*done/total) if total else 0})
+        done,total=day_status(s,u,cursor) if cursor<=today else (0,0)
+        categories=list(dict.fromkeys(h.category for h in habits(s,u) if occurs(h,cursor)))
+        days.append({"date":cursor.isoformat(),"completed":done,"scheduled":total,"percentage":round(100*done/total) if total else 0,"categories":categories})
         cursor+=timedelta(days=1)
     return {"year":year,"month":month,"days":days}
 @app.get("/activity")
-def activity(days:int=70,u:User=Depends(auth),s:Session=Depends(db)):
-    if days not in (70,183,365): raise HTTPException(422,"Activity range must be 70, 183, or 365 days.")
-    today=date.today(); cells=[]
+def activity(days:int=70,u:User=Depends(auth),s:Session=Depends(db),today:date=Depends(client_today)):
+    if days not in (70,84,183,365): raise HTTPException(422,"Activity range must be 70, 84, 183, or 365 days.")
+    cells=[]
     for offset in range(days-1,-1,-1):
         current=today-timedelta(days=offset); done,total=day_status(s,u,current)
-        cells.append({"date":current.isoformat(),"completed":done,"scheduled":total,"intensity":min(4,round(4*done/total)) if total else 0,"streak_day":bool(total and done==total)})
+        cells.append({"date":current.isoformat(),"completed":done,"scheduled":total,"intensity":max(1,min(4,round(4*done/total))) if done and total else 0,"streak_day":bool(total and done==total)})
     active_days=sum(c["completed"]>0 for c in cells); completed=sum(c["completed"] for c in cells)
-    return {"days":days,"cells":cells,"stats":{"completed":completed,"active_days":active_days,"current_streak":overall(s,u),"longest_habit_streak":max((streak(s,h)["longest"] for h in habits(s,u)),default=0)}}
+    return {"days":days,"cells":cells,"stats":{"completed":completed,"active_days":active_days,"current_streak":overall(s,u,today),"longest_habit_streak":max((streak(s,h,today)["longest"] for h in habits(s,u)),default=0)}}
+@app.get("/analytics")
+def analytics(u:User=Depends(auth),s:Session=Depends(db),today:date=Depends(client_today)):
+    hs=habits(s,u)
+    daily=[{"label":(today-timedelta(days=i)).isoformat(),**period_status(s,u,today-timedelta(days=i),today-timedelta(days=i))} for i in range(29,-1,-1)]
+    week_start=today-timedelta(days=today.weekday())
+    weekly=[{"label":(week_start-timedelta(days=7*i)).isoformat(),**period_status(s,u,week_start-timedelta(days=7*i),min(today,week_start-timedelta(days=7*i)+timedelta(days=6)))} for i in range(7,-1,-1)]
+    monthly=[]
+    for i in range(5,-1,-1):
+        year=today.year; month=today.month-i
+        while month<=0: year-=1; month+=12
+        first=date(year,month,1); next_month=date(year+1,1,1) if month==12 else date(year,month+1,1)
+        monthly.append({"label":first.isoformat()[:7],**period_status(s,u,first,min(today,next_month-timedelta(days=1)))})
+    previous_week_start=week_start-timedelta(days=7)
+    previous_week=period_status(s,u,previous_week_start,previous_week_start+timedelta(days=today.weekday()))
+    previous_month_end=today.replace(day=1)-timedelta(days=1)
+    previous_month_start=previous_month_end.replace(day=1)
+    previous_month=period_status(s,u,previous_month_start,min(previous_month_end,previous_month_start+timedelta(days=today.day-1)))
+    start=today-timedelta(days=29); habit_rates=[]
+    for h in hs:
+        scheduled_dates=[start+timedelta(days=i) for i in range(30) if occurs(h,start+timedelta(days=i))]
+        if scheduled_dates:
+            completed=sum(d in dates(s,h) for d in scheduled_dates)
+            habit_rates.append({"id":h.id,"name":h.name,"category":h.category,"completed":completed,"scheduled":len(scheduled_dates),"percentage":round(100*completed/len(scheduled_dates))})
+    categories=[]
+    for category in sorted({h["category"] for h in habit_rates}):
+        items=[h for h in habit_rates if h["category"]==category]; done=sum(h["completed"] for h in items); total=sum(h["scheduled"] for h in items)
+        categories.append({"name":category,"completed":done,"scheduled":total,"percentage":round(100*done/total) if total else 0})
+    return {"daily":daily,"weekly":weekly,"monthly":monthly,"previous_week":previous_week,"previous_month":previous_month,"habits":habit_rates,"categories":categories,"current_streak":overall(s,u,today),"longest_habit_streak":max((streak(s,h,today)["longest"] for h in hs),default=0)}
 @app.post("/habits",status_code=201)
-def create(data:HabitInput,u:User=Depends(auth),s:Session=Depends(db)):
+def create(data:HabitInput,u:User=Depends(auth),s:Session=Depends(db),today:date=Depends(client_today)):
     if not valid_schedule(data.schedule): raise HTTPException(422,"Schedule must be daily or comma-separated weekday numbers 0-6.")
-    values=data.model_dump(); values["created_on"]=values.pop("start_date") or date.today(); h=Habit(user_id=u.id,**values); s.add(h); s.commit(); return habit_out(s,h)
+    if data.start_date and data.start_date>today: raise HTTPException(422,"Start date cannot be in the future.")
+    values=data.model_dump(); values["created_on"]=values.pop("start_date") or today; h=Habit(user_id=u.id,**values); s.add(h); s.commit(); return habit_out(s,h,today)
 @app.put("/habits/{hid}")
-def update(hid:int,data:HabitInput,u:User=Depends(auth),s:Session=Depends(db)):
+def update(hid:int,data:HabitInput,u:User=Depends(auth),s:Session=Depends(db),today:date=Depends(client_today)):
     if not valid_schedule(data.schedule): raise HTTPException(422,"Schedule must be daily or comma-separated weekday numbers 0-6.")
     h=owned(hid,u,s)
+    if h.schedule!=data.schedule:
+        for period in h.schedule_periods:
+            if period.ended_on is None: period.ended_on=today
+        if not h.schedule_periods:
+            h.schedule_periods.append(SchedulePeriod(started_on=h.created_on,ended_on=today,schedule=h.schedule))
+        h.schedule_periods.append(SchedulePeriod(started_on=today,schedule=data.schedule))
     values=data.model_dump(); values.pop("start_date")
     for k,v in values.items(): setattr(h,k,v)
-    s.commit(); return habit_out(s,h)
+    s.commit(); return habit_out(s,h,today)
 @app.post("/habits/{hid}/archive")
-def archive(hid:int,u:User=Depends(auth),s:Session=Depends(db)):
-    h=owned(hid,u,s); h.active=0; s.commit(); return {"message":"Habit archived"}
+def archive(hid:int,u:User=Depends(auth),s:Session=Depends(db),today:date=Depends(client_today)):
+    h=owned(hid,u,s)
+    if not h.active: raise HTTPException(409,"Habit is already archived.")
+    h.active=0; h.archived_on=today; h.archive_periods.append(ArchivePeriod(started_on=today)); s.commit(); return {"message":"Habit archived"}
+@app.post("/habits/{hid}/restore")
+def restore(hid:int,u:User=Depends(auth),s:Session=Depends(db),today:date=Depends(client_today)):
+    h=owned(hid,u,s)
+    if h.active: raise HTTPException(409,"Habit is already active.")
+    for period in h.archive_periods:
+        if period.ended_on is None: period.ended_on=today
+    h.active=1; h.archived_on=None; s.commit(); return habit_out(s,h,today)
 @app.post("/demo/sample")
 def load_demo(u:User=Depends(auth),s:Session=Depends(db)):
     """Explicitly create a seven-day, labelled sample history for the signed-in account only."""
@@ -177,23 +270,22 @@ def reset_demo(u:User=Depends(auth),s:Session=Depends(db)):
 def remove(hid:int,u:User=Depends(auth),s:Session=Depends(db)):
     h=owned(hid,u,s); s.query(Completion).filter_by(habit_id=hid).delete(); s.delete(h); s.commit()
 @app.post("/habits/{hid}/complete")
-def complete(hid:int,body:CompletionInput,u:User=Depends(auth),s:Session=Depends(db)):
-    h=owned(hid,u,s); d=body.completed_on or date.today()
-    if not h.active: raise HTTPException(422,"Archived habits cannot be completed.")
-    if d>date.today() or d<h.created_on or not is_scheduled(h,d): raise HTTPException(422,"This habit is not scheduled for that date.")
+def complete(hid:int,body:CompletionInput,u:User=Depends(auth),s:Session=Depends(db),today:date=Depends(client_today)):
+    h=owned(hid,u,s); d=body.completed_on or today
+    if d>today or not occurs(h,d): raise HTTPException(422,"This habit is not scheduled for that date.")
     if s.query(Completion).filter_by(habit_id=hid,completed_on=d).first(): raise HTTPException(409,"Already completed; XP was not awarded again.")
     s.add(Completion(habit_id=hid,completed_on=d)); u.xp+=20; s.flush(); bonus(s,u,d); achievements(s,u); s.commit(); return {"message":"Habit completed","xp_awarded":20,**level(u.xp)}
 @app.delete("/habits/{hid}/complete")
-def undo(hid:int,body:CompletionInput,u:User=Depends(auth),s:Session=Depends(db)):
-    h=owned(hid,u,s); d=body.completed_on or date.today(); c=s.query(Completion).filter_by(habit_id=hid,completed_on=d).first()
+def undo(hid:int,body:CompletionInput,u:User=Depends(auth),s:Session=Depends(db),today:date=Depends(client_today)):
+    h=owned(hid,u,s); d=body.completed_on or today; c=s.query(Completion).filter_by(habit_id=hid,completed_on=d).first()
     if not c: raise HTTPException(404,"No completion exists for this date.")
     s.delete(c); u.xp=max(0,u.xp-20); s.flush(); bonus(s,u,d); s.commit(); return {"message":"Completion undone",**level(u.xp)}
 @app.get("/dashboard")
-def dashboard(u:User=Depends(auth),s:Session=Depends(db)):
-    today=date.today(); hs=habits(s,u); done,total=day_status(s,u,today); start=today-timedelta(days=today.weekday())
+def dashboard(u:User=Depends(auth),s:Session=Depends(db),today:date=Depends(client_today)):
+    hs=habits(s,u); done,total=day_status(s,u,today); start=today-timedelta(days=today.weekday()); month_start=today.replace(day=1)
     heat=[]
     for i in range(69,-1,-1):
         d=today-timedelta(days=i); a,b=day_status(s,u,d); heat.append({"date":d.isoformat(),"completed":a,"scheduled":b,"intensity":round(100*a/b) if b else 0})
     active=sum(day_status(s,u,start+timedelta(days=i))[0]>0 for i in range(today.weekday()+1)); unlocked={x.code:x.unlocked_on.isoformat() for x in s.query(Achievement).filter_by(user_id=u.id)}; total_done=count(s,u); best=max((streak(s,h)["longest"] for h in hs),default=0)
     defs=[("first_step","First step","Complete one habit",min(1,total_done),1),("three_days","Three-day spark","Reach a 3-day habit streak",min(3,best),3),("seven_days","Week warrior","Reach a 7-day habit streak",min(7,best),7),("fourteen_days","Consistency builder","Reach a 14-day habit streak",min(14,best),14),("thirty_completions","Steady hand","Complete 30 habits",min(30,total_done),30)]
-    return {"user":{"name":u.name,**level(u.xp)},"habits":[habit_out(s,h) for h in hs],"today":{"completed":done,"total":total,"bonus_claimed":bool(s.query(RewardClaim).filter_by(user_id=u.id,reward_key=f"daily_all:{today.isoformat()}").first())},"overall_streak":overall(s,u),"weekly_challenge":{"active_days":active,"target":5,"week_start":start.isoformat()},"heatmap":heat,"achievements":[{"code":c,"title":t,"description":x,"progress":p,"target":g,"unlocked_on":unlocked.get(c)} for c,t,x,p,g in defs]}
+    return {"user":{"name":u.name,**level(u.xp)},"habits":[habit_out(s,h,today) for h in hs],"today":{"completed":done,"total":total,"bonus_claimed":bool(s.query(RewardClaim).filter_by(user_id=u.id,reward_key=f"daily_all:{today.isoformat()}").first())},"overall_streak":overall(s,u,today),"overall_longest_streak":overall_longest(s,u,today),"weekly_consistency":period_status(s,u,start,today),"monthly_completion":period_status(s,u,month_start,today),"weekly_challenge":{"active_days":active,"target":5,"week_start":start.isoformat()},"heatmap":heat,"achievements":[{"code":c,"title":t,"description":x,"progress":p,"target":g,"unlocked_on":unlocked.get(c)} for c,t,x,p,g in defs]}

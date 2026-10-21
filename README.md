@@ -4,12 +4,12 @@ HabitQuest is a friendly, local-first habit tracker designed as a realistic coll
 
 ## What is included
 
-- Original React/Vite dashboard with responsive, accessible interactions and browser-history navigation
-- Registration, login, protected API calls, habit create/edit/archive/delete, search, completion and undo
+- React/Vite dashboard with responsive navigation, daily checklist, calendar and saved-data analytics
+- Registration, login, protected API calls, habit create/edit/archive/restore/delete, search and filters, completion and undo
 - Monthly calendar navigation and date-specific completion history from persisted records
 - Goal setup fields for start date, icon, duration, daily target and schedule
 - Explicit per-account four-week demonstration history loader and sample-only reset action
-- Seven-row contribution heatmap with 10-week, 6-month and 1-year ranges
+- Seven-row contribution heatmap with 12-week, 6-month and 1-year ranges
 - Original SVG mascot whose state follows persisted milestones
 - FastAPI + SQLite persistence with user isolation, duplicate-completion protection, XP, levels, daily bonuses, streaks, weekly challenges, heatmap data, and achievements
 - Simple source layout: `frontend/` is the UI, `backend/` is the API
@@ -17,7 +17,7 @@ HabitQuest is a friendly, local-first habit tracker designed as a realistic coll
 ## Run the interface
 
 ```bash
-npm install
+npm run install:all
 npm run dev
 ```
 
@@ -26,10 +26,11 @@ Open the local URL printed by Vite (normally `http://localhost:5173`).
 ## Run the API
 
 ```bash
+python -m venv .venv
+# Windows PowerShell: .venv\Scripts\Activate.ps1
+# macOS/Linux: source .venv/bin/activate
+pip install -r backend/requirements.txt
 cd backend
-python3 -m venv .venv
-source .venv/bin/activate
-pip install -r requirements.txt
 uvicorn app.main:app --reload
 ```
 
@@ -39,12 +40,20 @@ The API is available at `http://127.0.0.1:8000`, with interactive docs at `/docs
 
 ```bash
 cd backend
-pytest
+python -m pytest -q
+cd ../frontend
+npm test
+cd ..
+npm run build
 ```
 
 ## Project notes
 
-Start the API before opening the frontend. The frontend is connected to it at `http://127.0.0.1:8000` by default; set `VITE_API_URL` to use another address.
+Start the API before opening the frontend. The frontend is connected to it at `http://127.0.0.1:8000` by default; set `VITE_API_URL` to use another address. Set `HABITQUEST_DATABASE_URL` for a different SQLite database location (default: `sqlite:///./habitquest.db`, relative to the API working directory). Startup adds missing columns and the archive and schedule history tables without resetting saved data.
+
+On Windows, `zoneinfo` needs the `tzdata` package from `backend/requirements.txt` in the **same Python environment that runs Uvicorn**. If the API returns a time-zone data error, stop it, run `.\.venv\Scripts\python.exe -m pip install -r .\backend\requirements.txt` from the project root, then restart with `..\.venv\Scripts\python.exe -m uvicorn app.main:app --reload` from `backend/`.
+
+Dashboard percentages use completed scheduled occurrences divided by scheduled occurrences through the current day, with zero shown when no habits are scheduled. The frontend sends the browser's IANA time zone in `X-Time-Zone` so the API uses the user's local calendar day; clients without that header use the server's local day. Progress & Insights shows daily, weekly and monthly trends, prior-period comparisons for the same number of elapsed days, and per-habit and category consistency from saved completions. Archiving pauses occurrences; restoring resumes them. Schedule edits apply from the edit date, preserving earlier schedule calculations. The My Habits page filters active and archived habits and supports restore.
 
 Rewards are server-controlled. A completion earns 20 XP, undoing it reverses 20 XP, and completing every habit scheduled today earns a one-time 40 XP daily bonus. The database uniqueness constraint on `(habit_id, completed_on)` prevents duplicate rewards. A habit's current streak counts consecutive scheduled dates with a completion; dates outside its schedule are rest days and do not break the streak. Deleting a habit also deletes its completion history, so it no longer affects analytics.
 
