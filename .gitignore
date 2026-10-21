@@ -1,33 +1,30 @@
-# dependencies
-/node_modules
-/.pnp
-.pnp.js
+# Frontend dependencies and build output
+node_modules/
+frontend/node_modules/
+frontend/dist/
 
-# firebase
-src/api/firebase-config.js
+# Python environment and generated local data
+backend/.venv/
+backend/.pytest_cache/
+backend/*.db
+__pycache__/
+*.pyc
 
-# testing
-/coverage
-
-# production
-/build
-
-# firebase
-*.cache
-.firebaserc
-
-# misc
+# Local configuration and OS files
+.env
+.env.*
 .DS_Store
-.env.development
-.env.production
-.env.local
-.env.development.local
-.env.test.local
-.env.production.local
-
 npm-debug.log*
-yarn-debug.log*
-yarn-error.log*
 
-# IDE
-.idea
+# Local secrets and data
+.env
+.env.*
+!.env.example
+*.db
+*.sqlite
+*.sqlite3
+node_modules/
+.venv/
+venv/
+__pycache__/
+.DS_Store

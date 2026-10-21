@@ -1,0 +1,1 @@
+"""HabitQuest application package."""
