@@ -1,20 +1,19 @@
 import React from 'react';
 
-/** Spark is an original leaf-winged owl drawn entirely in SVG. */
+/** Questie is an original rounded green companion drawn as a lightweight SVG. */
 export default function Owl({ className = '', mood = 'happy' }) {
-  return <svg className={`hq-owl ${className}`} viewBox="0 0 180 190" role="img" aria-label="Spark the green owl" xmlns="http://www.w3.org/2000/svg">
-    <ellipse cx="91" cy="177" rx="53" ry="7" fill="#314e2e" opacity=".12" />
-    <path d="M48 47 35 19l32 13c15-7 32-7 47 0l31-13-12 29c15 14 21 33 18 55-4 36-29 63-60 63s-57-27-61-63c-3-22 3-41 18-56Z" fill="#73c72c" stroke="#399e25" strokeWidth="4" strokeLinejoin="round" />
-    <path d="M55 43c20-17 52-18 73 0-14-5-23 4-37 7-17 4-26-8-36-7Z" fill="#9be43d" />
-    <path d="M37 90C10 69 9 125 47 135" fill="#4eaf25" stroke="#328f24" strokeWidth="3" />
-    <path d="M143 90c28-21 31 35-8 45" fill="#4eaf25" stroke="#328f24" strokeWidth="3" />
-    <ellipse cx="66" cy="83" rx="26" ry="34" fill="#fffdf2" /><ellipse cx="114" cy="83" rx="26" ry="34" fill="#fffdf2" />
-    <ellipse cx="69" cy="85" rx="11" ry="17" fill="#204d43" /><ellipse cx="111" cy="85" rx="11" ry="17" fill="#204d43" />
-    <circle cx="73" cy="78" r="4" fill="white" /><circle cx="115" cy="78" r="4" fill="white" />
-    <path d="m79 111 11 11 11-11c-7-8-15-8-22 0Z" fill="#f4a01e" stroke="#dc7d16" strokeWidth="2" />
-    {mood === 'party' ? <path d="M80 131q10 13 21 0" fill="none" stroke="#285b40" strokeWidth="4" strokeLinecap="round" /> : <path d="M83 133q8 7 16 0" fill="none" stroke="#285b40" strokeWidth="3" strokeLinecap="round" />}
-    <path d="M67 162c-5 11-15 14-24 8m69-8c5 11 15 14 24 8" fill="none" stroke="#e99317" strokeWidth="8" strokeLinecap="round" />
-    <path d="M48 35c-6-11-10-21-11-29 14 6 23 12 29 21m66 8c7-11 10-21 11-29-14 6-23 12-29 21" fill="#58b729" stroke="#339e25" strokeWidth="3" strokeLinejoin="round" />
+  const calm = mood === 'calm'; const party = mood === 'party';
+  return <svg className={`hq-owl ${className}`} viewBox="0 0 180 190" role="img" aria-label={`Questie the green mascot feeling ${mood}`} xmlns="http://www.w3.org/2000/svg">
+    <ellipse cx="90" cy="174" rx="55" ry="7" fill="#274932" opacity=".14" />
+    {party && <g aria-hidden="true"><rect x="24" y="25" width="9" height="9" rx="2" fill="#ffb32e" transform="rotate(22 24 25)" /><rect x="145" y="35" width="8" height="8" rx="2" fill="#70c9ef" transform="rotate(-18 145 35)" /><path d="M38 45 29 35" stroke="#f47a91" strokeWidth="6" strokeLinecap="round" /><path d="m139 21 7-12" stroke="#735dd0" strokeWidth="6" strokeLinecap="round" /></g>}
+    <path d="M49 43c7-13 20-18 33-12 5 2 11 2 16 0 14-6 28-1 34 12 8 18 10 40 8 67-2 35-20 56-50 56s-49-21-51-56c-2-27 1-49 10-67Z" fill="#69cf00" />
+    <path d="M51 47c12-12 23-13 34-7 4 2 8 2 12 0 12-6 23-5 34 7l-9 13c-19-9-43-9-62 0L51 47Z" fill="#8bea00" />
+    <path d="M43 76C16 68 16 96 42 113l12-13-11-24Zm94 0c27-8 27 20 1 37l-12-13 11-24Z" fill="#5bbc00" />
+    <ellipse cx="67" cy="83" rx="25" ry="30" fill="#fff" /><ellipse cx="113" cy="83" rx="25" ry="30" fill="#fff" />
+    {calm ? <g><path d="M50 84q17 10 34 0" fill="none" stroke="#38534d" strokeWidth="6" strokeLinecap="round" /><path d="M96 84q17 10 34 0" fill="none" stroke="#38534d" strokeWidth="6" strokeLinecap="round" /></g> : <g><ellipse cx="70" cy="84" rx="10" ry="16" fill="#354a47" /><ellipse cx="110" cy="84" rx="10" ry="16" fill="#354a47" /><circle cx="74" cy="78" r="4" fill="#fff" /><circle cx="114" cy="78" r="4" fill="#fff" /></g>}
+    <path d="M78 105c7-7 17-7 24 0-2 11-7 16-12 16s-10-5-12-16Z" fill="#ff9d00" /><path d="M82 108h16" stroke="#e27800" strokeWidth="2" strokeLinecap="round" />
+    <path d="M82 126q8 7 16 0" fill="none" stroke="#315149" strokeWidth="3" strokeLinecap="round" />
+    <path d="M72 162c-5 9-14 10-23 5m59-5c5 9 14 10 23 5" fill="none" stroke="#ff9700" strokeWidth="9" strokeLinecap="round" />
   </svg>;
 }
 

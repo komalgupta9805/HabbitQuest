@@ -1,1 +1,1 @@
-"""HabitQuest application package."""
+"""Little Wins application package."""
