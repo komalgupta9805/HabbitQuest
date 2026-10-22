@@ -1,18 +1,17 @@
 import { describe, expect, it } from 'vitest';
-import { normalizeHabitSelection, toggleHabitSelection } from './habit-selection';
+import { normalizeHabitSelection, selectHabit } from './habit-selection';
 
 describe('habit heatmap selection', () => {
-  it('defaults to the first four active habits without deleting other IDs', () => {
-    expect(normalizeHabitSelection([], [1, 2, 3, 4, 5, 6])).toEqual([1, 2, 3, 4]);
+  it('defaults to the first active habit without deleting any saved history', () => {
+    expect(normalizeHabitSelection([], [1, 2, 3, 4, 5, 6])).toEqual([1]);
   });
 
   it('removes archived IDs and preserves the chosen active order', () => {
-    expect(normalizeHabitSelection([8, 3, 4], [2, 3, 4, 5])).toEqual([3, 4]);
+    expect(normalizeHabitSelection([8, 3, 4], [2, 3, 4, 5])).toEqual([3]);
   });
 
-  it('enforces four visible histories while allowing a user to swap selections', () => {
-    const full = [1, 2, 3, 4];
-    expect(toggleHabitSelection(full, 5)).toEqual(full);
-    expect(toggleHabitSelection(toggleHabitSelection(full, 2), 5)).toEqual([1, 3, 4, 5]);
+  it('stores exactly the habit chosen in the dropdown', () => {
+    expect(selectHabit(5)).toEqual([5]);
+    expect(selectHabit('8')).toEqual([8]);
   });
 });

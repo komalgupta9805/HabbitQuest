@@ -1,7 +1,6 @@
 """Local-first Little Wins API. Dates are local calendar dates and rewards are persisted server-side."""
 from datetime import date, datetime, timedelta, timezone
 from hashlib import sha256
-import re
 from secrets import token_urlsafe
 from typing import Generator
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError, available_timezones
@@ -13,7 +12,11 @@ from sqlalchemy.orm import Session, declarative_base, relationship, sessionmaker
 from .config import ACHIEVEMENT_XP, COMPLETION_XP, CORS_ORIGINS, CORS_ORIGIN_REGEX, DAILY_BONUS_XP, DATABASE_URL
 from .security import hash_password, issue_token, token_is_valid, verify_password
 
-HABIT_COLORS = ("#2E9E6F", "#E58A2B", "#735DD0", "#3182CE", "#159A9C", "#D85B7B", "#8A6D3B", "#567C3E", "#C45A3C", "#5B6FC0", "#B56BA7", "#2F8F9D", "#C98B2E", "#6A8E3A", "#9B5DE5", "#008C72", "#C65D7B", "#4A7C9B", "#A66A48", "#6B7F33")
+# Habit identity colours deliberately avoid the green, orange and red status palette.
+# This lets a calendar show "complete / partial / missed" independently from the
+# habit that produced an activity dot.
+HABIT_COLORS = ("#4F46E5", "#2563EB", "#7C3AED", "#0EA5E9", "#8B5CF6", "#64748B", "#A855F7", "#0369A1", "#6D28D9", "#334155", "#6366F1", "#1D4ED8")
+LEGACY_DEFAULT_HABIT_COLORS = {"#2E9E6F", "#E58A2B", "#735DD0", "#3182CE", "#159A9C", "#D85B7B", "#8A6D3B", "#567C3E", "#C45A3C", "#5B6FC0", "#B56BA7", "#2F8F9D", "#C98B2E", "#6A8E3A", "#9B5DE5", "#008C72", "#C65D7B", "#4A7C9B", "#A66A48", "#6B7F33"}
 HABIT_ICONS = {"water","exercise","walk","book","study","code","meditate","sleep","nutrition","health","target","sparkles"}
 LEGACY_HABIT_ICONS = {"✦","⌘","↗","◎","◆"}
 engine = create_engine(DATABASE_URL, connect_args={"check_same_thread": False})
@@ -54,6 +57,10 @@ with engine.begin() as connection:
 with SessionLocal() as _migration_session:
     for _habit in _migration_session.query(Habit).filter((Habit.color.is_(None)) | (Habit.color=="")).all():
         _habit.color=HABIT_COLORS[(_habit.id-1)%len(HABIT_COLORS)]
+    # Migrate only colours from the previous built-in palette, never arbitrary
+    # stored values, so historical calendar dots cannot resemble task status.
+    for _habit in _migration_session.query(Habit).filter(Habit.color.in_(LEGACY_DEFAULT_HABIT_COLORS)).all():
+        _habit.color=HABIT_COLORS[(_habit.id-1)%len(HABIT_COLORS)]
     _migration_session.commit()
 def _add_columns(table, definitions):
     existing={c["name"] for c in inspect(engine).get_columns(table)}
@@ -86,8 +93,10 @@ class HabitInput(BaseModel):
     @field_validator("color")
     @classmethod
     def valid_color(cls,value):
-        if value is not None and not re.fullmatch(r"#[0-9A-Fa-f]{6}",value): raise ValueError("Color must be a six-digit hex color.")
-        return value.upper() if value else None
+        if value is None: return None
+        normalised=value.upper()
+        if normalised not in HABIT_COLORS: raise ValueError("Choose a habit identity colour from the supported palette.")
+        return normalised
     @field_validator("icon")
     @classmethod
     def valid_icon(cls,value):
@@ -202,7 +211,8 @@ def achievement_catalog(s,u,today=None):
     for definition in ACHIEVEMENT_DEFS:
         progress=total if definition["metric"]=="total" else best
         target=definition["target"]
-        result.append({**definition,"progress":min(progress,target),"remaining":max(0,target-progress),"reward_xp":ACHIEVEMENT_XP[definition["code"]],"unlocked_on":unlocked.get(definition["code"]).isoformat() if unlocked.get(definition["code"]) else None})
+        calculation = "Persisted completed habit records" if definition["metric"]=="total" else "Best single-habit streak across scheduled days"
+        result.append({**definition,"progress":min(progress,target),"remaining":max(0,target-progress),"calculation":calculation,"reward_xp":ACHIEVEMENT_XP[definition["code"]],"unlocked_on":unlocked.get(definition["code"]).isoformat() if unlocked.get(definition["code"]) else None})
     return result
 def achievements(s,u,today=None):
     total=count(s,u); best=max((streak(s,h,today)["longest"] for h in habits(s,u)),default=0); rules=[("first_step",total>=1),("three_days",best>=3),("seven_days",best>=7),("fourteen_days",best>=14),("thirty_completions",total>=30)]
@@ -440,8 +450,8 @@ def load_demo(u:User=Depends(auth),s:Session=Depends(db)):
     if count(s,u): raise HTTPException(409,"Demo data can only be loaded into an account with no completions. Use reset first.")
     start=date.today()-timedelta(days=27)
     if s.query(Habit).filter_by(user_id=u.id,is_demo=1).first(): raise HTTPException(409,"Sample history is already loaded.")
-    dsa=Habit(user_id=u.id,name="Demo: practise DSA",description="Solve two questions",category="Study",schedule="daily",created_on=start,icon="code",color="#3182CE",target_days=30,target_text="2 questions",is_demo=1)
-    move=Habit(user_id=u.id,name="Demo: move your body",description="A 20 minute walk",category="Health",schedule="0,1,2,3,4,5",created_on=start,icon="walk",color="#2E9E6F",target_days=14,target_text="20 minutes",is_demo=1)
+    dsa=Habit(user_id=u.id,name="Demo: practise DSA",description="Solve two questions",category="Study",schedule="daily",created_on=start,icon="code",color="#2563EB",target_days=30,target_text="2 questions",is_demo=1)
+    move=Habit(user_id=u.id,name="Demo: move your body",description="A 20 minute walk",category="Health",schedule="0,1,2,3,4,5",created_on=start,icon="walk",color="#7C3AED",target_days=14,target_text="20 minutes",is_demo=1)
     s.add_all([dsa,move]); s.flush()
     created=0
     for offset in range(28):

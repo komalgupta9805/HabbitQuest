@@ -30,3 +30,8 @@ body{background:var(--hq-cream);color:var(--hq-ink)}
 .task-row:has(.task-progress){flex-wrap:wrap}.task-progress{width:100%;display:flex;align-items:flex-end;gap:7px;padding:0 4px 8px 44px}.task-progress label{display:flex;align-items:center;gap:5px;flex:1;margin:0;color:var(--hq-muted);font-size:9px}.task-progress label>span{position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0 0 0 0)}.task-progress input{width:70px;border:1px solid var(--hq-line);border-radius:7px;padding:6px;background:#fff}.task-progress b{font-size:9px;color:var(--hq-muted);white-space:nowrap}.task-progress button{border:0;border-radius:7px;padding:6px 9px;background:#e4f1eb;color:#17604f;font-size:9px;font-weight:800;cursor:pointer}.task-progress button:disabled{opacity:.55;cursor:wait}
 .habit-heat-stats{grid-template-columns:repeat(5,1fr)}
 @media(max-width:620px){.habit-heat-stats{grid-template-columns:repeat(2,1fr)}}
+
+/* The history control is intentionally a single, plain habit dropdown. */
+.habit-tracking-controls>.habit-selector{position:static;display:grid;gap:4px;color:var(--hq-muted);font-size:9px;font-weight:800;letter-spacing:.04em;text-transform:uppercase}
+.habit-tracking-controls>.habit-selector select{min-width:170px;border:1px solid var(--hq-line);border-radius:9px;background:#fff;padding:8px 10px;color:var(--hq-ink);font-size:11px;font-weight:700;letter-spacing:normal;text-transform:none;cursor:pointer}
+@media(max-width:620px){.habit-tracking-controls>.habit-selector select{width:100%;min-width:0}}

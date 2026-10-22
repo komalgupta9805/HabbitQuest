@@ -317,31 +317,44 @@ def test_habit_activity_selection_limit_partial_progress_and_isolation():
     headers=register(); other=register("activity-other@example.com")
     items=[habit(headers,f"Habit {index}") for index in range(5)]
     assert client.get("/habit-activity?days=84&habit_ids="+",".join(str(item["id"]) for item in items),headers=headers).status_code==422
-    measurable=client.post("/habits",headers=headers,json={"name":"Water","daily_target":8,"target_unit":"glasses","color":"#159A9C"}).json()
+    measurable=client.post("/habits",headers=headers,json={"name":"Water","daily_target":8,"target_unit":"glasses","color":"#0EA5E9"}).json()
     client.put(f"/habits/{measurable['id']}/progress",headers=headers,json={"recorded_value":4}).raise_for_status()
     activity=client.get(f"/habit-activity?days=84&habit_ids={measurable['id']}",headers=headers).json()["habits"][0]
-    assert activity["color"]=="#159A9C" and activity["cells"][-1]["status"]=="partial" and activity["stats"]["partial"]==1
+    assert activity["color"]=="#0EA5E9" and activity["cells"][-1]["status"]=="partial" and activity["stats"]["partial"]==1
     assert client.get(f"/habit-activity?days=84&habit_ids={measurable['id']}",headers=other).status_code==404
 
 def test_supported_habit_icon_is_saved_edited_and_validated():
     headers=register()
-    created=client.post("/habits",headers=headers,json={"name":"Hydrate","icon":"water","color":"#159A9C"})
+    created=client.post("/habits",headers=headers,json={"name":"Hydrate","icon":"water","color":"#0EA5E9"})
     assert created.status_code==201 and created.json()["icon"]=="water"
-    edited=client.put(f"/habits/{created.json()['id']}",headers=headers,json={"name":"Hydrate","icon":"health","color":"#159A9C"})
+    edited=client.put(f"/habits/{created.json()['id']}",headers=headers,json={"name":"Hydrate","icon":"health","color":"#0EA5E9"})
     assert edited.status_code==200 and edited.json()["icon"]=="health"
     assert client.get("/habits",headers=headers).json()[0]["icon"]=="health"
     invalid=client.post("/habits",headers=headers,json={"name":"Bad icon","icon":"not-an-icon"})
     assert invalid.status_code==422
+    status_colour=client.post("/habits",headers=headers,json={"name":"Status coloured","color":"#2E9E6F"})
+    assert status_colour.status_code==422
 
 def test_calendar_separates_day_status_from_each_habit_identity_color():
-    headers=register(); first=habit(headers,"Study"); second=client.post("/habits",headers=headers,json={"name":"Water","icon":"water","color":"#159A9C"}).json()
+    headers=register(); first=habit(headers,"Study"); second=client.post("/habits",headers=headers,json={"name":"Water","icon":"water","color":"#0EA5E9"}).json()
     client.post(f"/habits/{first['id']}/complete",headers=headers,json={}).raise_for_status()
     today=date.today(); cell=next(item for item in client.get(f"/calendar/{today.year}/{today.month}",headers=headers).json()["days"] if item["date"]==today.isoformat())
     assert cell["completed"]==1 and cell["scheduled"]==2
-    assert {(item["name"],item["color"],item["status"]) for item in cell["activities"]}=={("Study",first["color"],"complete"),("Water","#159A9C","missed")}
+    assert {(item["name"],item["color"],item["status"]) for item in cell["activities"]}=={("Study",first["color"],"complete"),("Water","#0EA5E9","missed")}
     tomorrow=today+timedelta(days=1); future=next(item for item in client.get(f"/calendar/{tomorrow.year}/{tomorrow.month}",headers=headers).json()["days"] if item["date"]==tomorrow.isoformat())
     assert future["completed"]==0 and future["scheduled"]==0
     assert all(item["status"]=="upcoming" for item in future["activities"])
+
+def test_achievement_catalog_exposes_persisted_calculation_and_real_progress():
+    headers=register(); item=habit(headers,"Study")
+    client.post(f"/habits/{item['id']}/complete",headers=headers,json={}).raise_for_status()
+    achievements=client.get("/gamification/achievements",headers=headers).json()
+    first=next(item for item in achievements if item["code"]=="first_step")
+    three_day=next(item for item in achievements if item["code"]=="three_days")
+    assert first["progress"]==1 and first["target"]==1 and first["unlocked_on"]
+    assert first["calculation"]=="Persisted completed habit records"
+    assert three_day["progress"]==1 and three_day["target"]==3
+    assert three_day["calculation"]=="Best single-habit streak across scheduled days"
 
 def test_demo_reset_preserves_real_habits_and_completions():
     headers=register(); real=habit(headers,"My real habit")
