@@ -16,6 +16,14 @@ Little Wins is a friendly, local-first habit tracker designed as a realistic col
 - Original SVG mascot whose state follows persisted milestones
 - FastAPI + SQLite persistence with user isolation, expiring sessions, bcrypt password hashing, partial progress, an auditable XP ledger, goals, deterministic insights, streaks, analytics, and achievements
 - Simple source layout: `frontend/` is the UI, `backend/` is the API
+- EmailJS test emails, opt-in reminders, a persisted notification center, and safe demo previews
+- High, Medium, and Low habit priorities with a Today dashboard focus list and quick edits
+
+## Habit priorities
+
+Choose a priority when adding or editing a habit, or change it directly on **Today → Today's Priorities** or **My Habits**. Today's Priorities offers All, High Priority, Due Today, and Completed views. Incomplete habits appear first in priority order; completed habits remain in All and Completed. Due Today means scheduled for the user's local calendar day. Habits are recurring, so their target end date is not treated as an overdue task deadline.
+
+Existing habits gain **Medium** on API startup through the existing SQLite column migration. New habits also default to Medium. The API accepts `High`, `Medium`, and `Low` on habit creation and editing, and `PATCH /habits/{id}/priority` changes only the priority for an authenticated owner. Priority changes do not alter completions, streaks, or analytics.
 
 ## Run the interface
 
@@ -40,6 +48,22 @@ uvicorn app.main:app --reload
 The API is available at `http://127.0.0.1:8000`, with interactive docs at `/docs`.
 
 Use `.env.example` as the configuration reference. `HABITQUEST_DATABASE_URL` controls the SQLAlchemy database URL, `HABITQUEST_CORS_ORIGINS` is a comma-separated exact-origin allow-list, and `VITE_API_URL` tells the browser where the API is. For local development, `HABITQUEST_CORS_ORIGIN_REGEX` permits only `localhost` and `127.0.0.1` across Vite fallback ports; replace or disable that expression for deployment and list the deployed frontend origin explicitly. Export these values in the relevant terminal; do not commit a populated `.env` or database.
+
+## EmailJS notifications
+
+Copy `frontend/.env.example` to `frontend/.env`. Replace `YOUR_PUBLIC_KEY` with your real EmailJS public key. The supplied service and template IDs are `service_odu5d78` and `template_xjkmtun`. Set `VITE_APP_URL` to the browser URL for this app (including its deployment origin in production). Restart Vite after editing `.env`. The `.env` file is ignored by Git; `.env.example` is tracked. The EmailJS public key is a browser identifier, so use EmailJS allowed-domain restrictions and account limits. Do not enter Gmail credentials in this app.
+
+Configure the EmailJS template with **To Email** `{{to_email}}` or `{{email}}`, **To Name** `{{to_name}}`, and **Subject** `{{subject}}`. The body should include `{{message}}`, and may include `{{habit_name}}`, `{{notification_type}}`, and `{{app_url}}`. A suggested concise body is: “Hi {{to_name}}, every little step counts! {{message}} Open Little Wins: {{app_url}}”. The browser SDK supplies both recipient variables with the same signed-in account email from `GET /me`.
+
+To send a real test: start both servers, sign in, open **Settings → Email Notifications**, confirm the configuration status, and click **Send Test Email**. The button is limited to one request per minute. A success message means EmailJS accepted the request; check the inbox and spam folder for delivery. A missing public key leaves the rest of the app usable and shows a setup message. Routine emails are off by default; enable the master switch and the desired types in Settings.
+
+If a test fails with `HTTP 412` and `Gmail_API: Request had insufficient authentication scopes`, the browser request reached EmailJS but its connected Gmail account lacks permission to send. In the EmailJS dashboard, open **Email Services**, select the service whose ID matches `VITE_EMAILJS_SERVICE_ID`, reconnect the Google account, approve the requested send-mail permission, save/update the service, and use EmailJS's service test. Then wait one minute and send a new test from Settings. The Google authorization and any refresh token are managed by EmailJS; this app stores neither and cannot repair that connection in source code. Do not paste Google tokens or credentials into this project.
+
+For a presentation, open **Settings → Demo Notifications** and use the four Preview buttons. Open the bell to show each example, then mark one as read and dismiss another. **Email me this example** uses EmailJS with the signed-in account's address and reports the SDK result. Preview actions do not change completions, XP, streaks, or achievements. **Clear demo notifications** hides only demo notification records for the signed-in account. Preview creation is rate limited and capped at 20 records per account per day; clearing does not reset that limit or the email attempt history.
+
+The API computes due events using the browser's `X-Time-Zone` IANA identifier. Pending reminders require a habit reminder time and an incomplete, scheduled local day. Missed notices are created only after that local day ends. Streak reminders become due after 18:00 local time when a current streak has incomplete scheduled habits. Achievement and level-up events follow persisted milestones. Each event has a per-user unique key. The bell refreshes while the app is open; eligible routine emails are claimed once before the browser SDK call. Email status distinguishes `pending`, `attempted`, `accepted` by EmailJS, and `failed`. An interrupted attempt remains `attempted` so it cannot silently send twice; create a new test event after the cooldown if needed. EmailJS in the browser cannot send while the browser is closed. Reliable background delivery would require a separate server-side delivery service, which this project does not configure.
+
+The backend creates `notifications` and `notification_preferences` tables on startup through its existing `create_all` convention. No database reset or manual migration command is required. Notification endpoints require the existing bearer token; listing, preferences, marking read, dismissing, previews, and email outcomes are scoped to the authenticated user. Notification requests require `X-Time-Zone`; clients without a valid IANA time zone receive a clear validation error.
 
 ## Test the API
 
@@ -66,6 +90,7 @@ All private routes require `Authorization: Bearer <token>`. Current route names 
 - Gamification: `GET /gamification/profile`, `GET /gamification/xp`, `GET /gamification/achievements`, and the opt-in `GET /leaderboard`
 - Invitations: authenticated `POST /invites`, public validation at `GET /invites/{token}`, and owner-only revocation with `DELETE /invites/{token}`
 - Demo/readiness: `POST/DELETE /demo/sample`, `GET /health`
+- Notifications: `GET /notifications`, `GET /notifications/unread-count`, `GET /notifications/due`, `POST /notifications/{id}/read|dismiss|email-claim|email-outcome`, `GET/PUT /notification-preferences`, `POST /notifications/test|demo`, `DELETE /notifications/demo`
 
 ## Project notes
 

@@ -2,7 +2,7 @@
 from datetime import date, datetime, timedelta, timezone
 from hashlib import sha256
 from secrets import token_urlsafe
-from typing import Generator
+from typing import Generator, Literal
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError, available_timezones
 from fastapi import Depends, FastAPI, Header, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
@@ -25,7 +25,7 @@ def utc_now(): return datetime.now(timezone.utc).replace(tzinfo=None)
 class User(Base):
     __tablename__="users"; id=Column(Integer,primary_key=True); name=Column(String(80),nullable=False); email=Column(String(160),unique=True,nullable=False,index=True); password_hash=Column(String(128),nullable=False); xp=Column(Integer,default=0,nullable=False); leaderboard_opt_in=Column(Integer,default=0,nullable=False); token=Column(String(96),unique=True,nullable=False); token_expires_at=Column(DateTime,nullable=True); timezone=Column(String(80),default="",nullable=False); created_at=Column(DateTime,default=utc_now,nullable=False); updated_at=Column(DateTime,default=utc_now,onupdate=utc_now,nullable=False)
 class Habit(Base):
-    __tablename__="habits"; id=Column(Integer,primary_key=True); user_id=Column(Integer,ForeignKey("users.id"),nullable=False,index=True); name=Column(String(80),nullable=False); description=Column(String(240),default="",nullable=False); category=Column(String(40),default="Personal",nullable=False); schedule=Column(String(30),default="daily",nullable=False); created_on=Column(Date,default=date.today,nullable=False); end_on=Column(Date,nullable=True); active=Column(Integer,default=1,nullable=False); archived_on=Column(Date,nullable=True); icon=Column(String(12),default="sparkles",nullable=False); color=Column(String(7),default=HABIT_COLORS[0],nullable=False); target_days=Column(Integer,default=0,nullable=False); target_text=Column(String(120),default="",nullable=False); daily_target=Column(Float,nullable=True); target_unit=Column(String(30),default="",nullable=False); reminder_time=Column(String(5),default="",nullable=False); is_demo=Column(Integer,default=0,nullable=False); created_at=Column(DateTime,default=utc_now,nullable=False); updated_at=Column(DateTime,default=utc_now,onupdate=utc_now,nullable=False)
+    __tablename__="habits"; id=Column(Integer,primary_key=True); user_id=Column(Integer,ForeignKey("users.id"),nullable=False,index=True); name=Column(String(80),nullable=False); description=Column(String(240),default="",nullable=False); category=Column(String(40),default="Personal",nullable=False); schedule=Column(String(30),default="daily",nullable=False); priority=Column(String(6),default="Medium",nullable=False); created_on=Column(Date,default=date.today,nullable=False); end_on=Column(Date,nullable=True); active=Column(Integer,default=1,nullable=False); archived_on=Column(Date,nullable=True); icon=Column(String(12),default="sparkles",nullable=False); color=Column(String(7),default=HABIT_COLORS[0],nullable=False); target_days=Column(Integer,default=0,nullable=False); target_text=Column(String(120),default="",nullable=False); daily_target=Column(Float,nullable=True); target_unit=Column(String(30),default="",nullable=False); reminder_time=Column(String(5),default="",nullable=False); is_demo=Column(Integer,default=0,nullable=False); created_at=Column(DateTime,default=utc_now,nullable=False); updated_at=Column(DateTime,default=utc_now,onupdate=utc_now,nullable=False)
     archive_periods=relationship("ArchivePeriod",cascade="all, delete-orphan")
     schedule_periods=relationship("SchedulePeriod",cascade="all, delete-orphan",order_by="SchedulePeriod.started_on")
 class ArchivePeriod(Base):
@@ -46,10 +46,14 @@ class Goal(Base):
     __tablename__="goals"; id=Column(Integer,primary_key=True); user_id=Column(Integer,ForeignKey("users.id"),nullable=False,index=True); title=Column(String(100),nullable=False); description=Column(String(300),default="",nullable=False); target_count=Column(Integer,nullable=False); start_on=Column(Date,nullable=False); end_on=Column(Date,nullable=False); status=Column(String(16),default="active",nullable=False); created_at=Column(DateTime,default=utc_now,nullable=False); updated_at=Column(DateTime,default=utc_now,onupdate=utc_now,nullable=False); habits=relationship("Habit",secondary="goal_habits")
 class Invitation(Base):
     __tablename__="invitations"; id=Column(Integer,primary_key=True); inviter_user_id=Column(Integer,ForeignKey("users.id"),nullable=False,index=True); token_hash=Column(String(64),unique=True,nullable=False,index=True); expires_at=Column(DateTime,nullable=False); revoked_at=Column(DateTime,nullable=True); uses=Column(Integer,default=0,nullable=False); created_at=Column(DateTime,default=utc_now,nullable=False)
+class NotificationPreference(Base):
+    __tablename__="notification_preferences"; user_id=Column(Integer,ForeignKey("users.id"),primary_key=True); email_enabled=Column(Integer,default=0,nullable=False); pending=Column(Integer,default=1,nullable=False); missed=Column(Integer,default=1,nullable=False); streak_at_risk=Column(Integer,default=1,nullable=False); achievement=Column(Integer,default=1,nullable=False)
+class Notification(Base):
+    __tablename__="notifications"; id=Column(Integer,primary_key=True); user_id=Column(Integer,ForeignKey("users.id"),nullable=False,index=True); event_key=Column(String(180),nullable=False); kind=Column(String(30),nullable=False); title=Column(String(160),nullable=False); message=Column(String(400),nullable=False); habit_id=Column(Integer,nullable=True); habit_name=Column(String(80),default="",nullable=False); event_date=Column(Date,nullable=True); is_demo=Column(Integer,default=0,nullable=False); created_at=Column(DateTime,default=utc_now,nullable=False); read_at=Column(DateTime,nullable=True); dismissed_at=Column(DateTime,nullable=True); email_status=Column(String(20),default="pending",nullable=False); email_attempted_at=Column(DateTime,nullable=True); __table_args__=(UniqueConstraint("user_id","event_key",name="unique_user_notification_event"),)
 Base.metadata.create_all(engine)
 # Lightweight backward-compatible migration for local project databases.
 _columns={c["name"] for c in inspect(engine).get_columns("habits")}
-for _name,_sql in {"active":"INTEGER NOT NULL DEFAULT 1","archived_on":"DATE","end_on":"DATE","icon":"VARCHAR(12) NOT NULL DEFAULT '✦'","color":"VARCHAR(7)","target_days":"INTEGER NOT NULL DEFAULT 0","target_text":"VARCHAR(120) NOT NULL DEFAULT ''","daily_target":"FLOAT","target_unit":"VARCHAR(30) NOT NULL DEFAULT ''","reminder_time":"VARCHAR(5) NOT NULL DEFAULT ''","is_demo":"INTEGER NOT NULL DEFAULT 0","created_at":"DATETIME","updated_at":"DATETIME"}.items():
+for _name,_sql in {"active":"INTEGER NOT NULL DEFAULT 1","archived_on":"DATE","end_on":"DATE","priority":"VARCHAR(6) NOT NULL DEFAULT 'Medium'","icon":"VARCHAR(12) NOT NULL DEFAULT '✦'","color":"VARCHAR(7)","target_days":"INTEGER NOT NULL DEFAULT 0","target_text":"VARCHAR(120) NOT NULL DEFAULT ''","daily_target":"FLOAT","target_unit":"VARCHAR(30) NOT NULL DEFAULT ''","reminder_time":"VARCHAR(5) NOT NULL DEFAULT ''","is_demo":"INTEGER NOT NULL DEFAULT 0","created_at":"DATETIME","updated_at":"DATETIME"}.items():
     if _name not in _columns:
         with engine.begin() as connection: connection.execute(text(f"ALTER TABLE habits ADD COLUMN {_name} {_sql}"))
 with engine.begin() as connection:
@@ -79,12 +83,12 @@ app.add_middleware(
     allow_origins=CORS_ORIGINS,
     allow_origin_regex=CORS_ORIGIN_REGEX,
     allow_credentials=False,
-    allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
+    allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
     allow_headers=["Authorization", "Content-Type", "X-Time-Zone"],
 )
 class Credentials(BaseModel): name:str=Field("",max_length=80); email:str=Field(min_length=3,max_length=160); password:str=Field(min_length=6,max_length=100); invite_token:str=Field("",max_length=200)
 class HabitInput(BaseModel):
-    name:str=Field(min_length=1,max_length=80); description:str=Field("",max_length=240); category:str=Field("Personal",max_length=40); schedule:str="daily"; icon:str=Field("sparkles",max_length=12); color:str|None=None; start_date:date|None=None; end_date:date|None=None; target_days:int=Field(0,ge=0,le=3650); target_text:str=Field("",max_length=120); daily_target:float|None=Field(None,gt=0,le=1_000_000); target_unit:str=Field("",max_length=30); reminder_time:str=Field("",max_length=5)
+    name:str=Field(min_length=1,max_length=80); description:str=Field("",max_length=240); category:str=Field("Personal",max_length=40); schedule:str="daily"; priority:Literal["High","Medium","Low"]="Medium"; icon:str=Field("sparkles",max_length=12); color:str|None=None; start_date:date|None=None; end_date:date|None=None; target_days:int=Field(0,ge=0,le=3650); target_text:str=Field("",max_length=120); daily_target:float|None=Field(None,gt=0,le=1_000_000); target_unit:str=Field("",max_length=30); reminder_time:str=Field("",max_length=5)
     @field_validator("name", "category")
     @classmethod
     def not_blank(cls,value):
@@ -103,6 +107,11 @@ class HabitInput(BaseModel):
         value=value.strip() or "sparkles"
         if value not in HABIT_ICONS and value not in LEGACY_HABIT_ICONS: raise ValueError("Choose an icon from the supported habit icon set.")
         return value
+    @field_validator("reminder_time")
+    @classmethod
+    def valid_reminder_time(cls,value):
+        if value and not re.fullmatch(r"(?:[01]\d|2[0-3]):[0-5]\d",value): raise ValueError("Reminder time must use 24-hour HH:MM format.")
+        return value
 class CompletionInput(BaseModel): completed_on:date|None=None; recorded_value:float|None=Field(None,ge=0,le=1_000_000); note:str=Field("",max_length=300)
 class GoalInput(BaseModel):
     title:str=Field(min_length=1,max_length=100); description:str=Field("",max_length=300); target_count:int=Field(ge=1,le=10000); start_on:date; end_on:date; habit_ids:list[int]=Field(default_factory=list,max_length=50)
@@ -113,6 +122,11 @@ class GoalInput(BaseModel):
         return value.strip()
 class ProgressInput(BaseModel): completed_on:date|None=None; recorded_value:float=Field(ge=0,le=1_000_000); note:str=Field("",max_length=300)
 class LeaderboardInput(BaseModel): enabled:bool
+class NotificationPreferencesInput(BaseModel):
+    email_enabled:bool; pending:bool; missed:bool; streak_at_risk:bool; achievement:bool
+class DemoNotificationInput(BaseModel): kind:str
+class EmailOutcomeInput(BaseModel): status:str
+class PriorityInput(BaseModel): priority:Literal["High","Medium","Low"]
 def db()->Generator[Session,None,None]:
     s=SessionLocal()
     try: yield s
@@ -131,6 +145,14 @@ def client_today(x_time_zone:str=Header("")):
         raise HTTPException(422,"X-Time-Zone must be a valid IANA time zone, such as Asia/Kolkata.")
     except ValueError:
         raise HTTPException(422,"X-Time-Zone must be a valid IANA time zone, such as Asia/Kolkata.")
+def client_now(x_time_zone:str=Header("")):
+    zone_name=x_time_zone.strip()
+    if not zone_name: raise HTTPException(422,"X-Time-Zone is required for notifications.")
+    try: return datetime.now(ZoneInfo(zone_name))
+    except ZoneInfoNotFoundError:
+        if not available_timezones(): raise HTTPException(503,"Server time zone data is unavailable.")
+        raise HTTPException(422,"X-Time-Zone must be a valid IANA time zone, such as Asia/Kolkata.")
+    except ValueError: raise HTTPException(422,"X-Time-Zone must be a valid IANA time zone, such as Asia/Kolkata.")
 def level(xp):
     n=xp//100+1; within=xp%100
     return {"level":n,"xp":xp,"current_level_xp":(n-1)*100,"next_level_xp":n*100,"xp_into_level":within,"xp_for_next_level":100,"xp_to_next_level":100-within,"level_progress":within}
@@ -168,7 +190,7 @@ def streak(s,h,today=None):
 def habit_out(s,h,today=None):
     today=today or date.today()
     done=len(dates(s,h)); end=h.created_on+timedelta(days=h.target_days-1) if h.target_days else None
-    return {"id":h.id,"name":h.name,"description":h.description,"category":h.category,"schedule":h.schedule,"created_on":h.created_on.isoformat(),"end_on":h.end_on.isoformat() if h.end_on else None,"icon":h.icon,"color":h.color,"target_days":h.target_days,"target_text":h.target_text,"daily_target":h.daily_target,"target_unit":h.target_unit,"reminder_time":h.reminder_time,"target_end":end.isoformat() if end else None,"completed_days":done,"goal_progress":min(100,round(100*done/h.target_days)) if h.target_days else 0,"goal_complete":bool(h.target_days and done>=h.target_days),"active":bool(h.active),"archived_on":h.archived_on.isoformat() if h.archived_on else None,"is_demo":bool(h.is_demo),"scheduled_today":occurs(h,today),"done_today":today in dates(s,h),**streak(s,h,today)}
+    return {"id":h.id,"name":h.name,"description":h.description,"category":h.category,"schedule":h.schedule,"priority":h.priority or "Medium","created_on":h.created_on.isoformat(),"end_on":h.end_on.isoformat() if h.end_on else None,"icon":h.icon,"color":h.color,"target_days":h.target_days,"target_text":h.target_text,"daily_target":h.daily_target,"target_unit":h.target_unit,"reminder_time":h.reminder_time,"target_end":end.isoformat() if end else None,"completed_days":done,"goal_progress":min(100,round(100*done/h.target_days)) if h.target_days else 0,"goal_complete":bool(h.target_days and done>=h.target_days),"active":bool(h.active),"archived_on":h.archived_on.isoformat() if h.archived_on else None,"is_demo":bool(h.is_demo),"scheduled_today":occurs(h,today),"done_today":today in dates(s,h),**streak(s,h,today)}
 def day_status(s,u,d):
     scheduled=[h for h in habits(s,u) if occurs(h,d)]
     return sum(d in dates(s,h) for h in scheduled),len(scheduled)
@@ -314,7 +336,7 @@ def day_view(selected_day:date,u:User=Depends(auth),s:Session=Depends(db),today:
     for h in habits(s,u):
         if occurs(h,selected_day):
             record=s.query(Completion).filter_by(habit_id=h.id,completed_on=selected_day).first()
-            rows.append({"id":h.id,"name":h.name,"description":h.description,"category":h.category,"schedule":h.schedule,"icon":h.icon,"color":h.color,"done":bool(record and record.status=="complete"),"progress":record.recorded_value if record else None,"note":record.note if record else "","daily_target":h.daily_target,"target_unit":h.target_unit,"can_toggle":True,**streak(s,h,today)})
+            rows.append({"id":h.id,"name":h.name,"description":h.description,"category":h.category,"schedule":h.schedule,"priority":h.priority or "Medium","icon":h.icon,"color":h.color,"done":bool(record and record.status=="complete"),"progress":record.recorded_value if record else None,"note":record.note if record else "","daily_target":h.daily_target,"target_unit":h.target_unit,"can_toggle":True,**streak(s,h,today)})
     done=sum(x["done"] for x in rows)
     partial=sum(bool(x["progress"] is not None and not x["done"]) for x in rows)
     return {"date":selected_day.isoformat(),"completed":done,"partial":partial,"missed":max(0,len(rows)-done-partial),"scheduled":len(rows),"habits":rows}
@@ -432,6 +454,12 @@ def update(hid:int,data:HabitInput,u:User=Depends(auth),s:Session=Depends(db),to
     if not values["color"]: values["color"]=h.color
     for k,v in values.items(): setattr(h,k,v)
     s.commit(); return habit_out(s,h,today)
+@app.patch("/habits/{hid}/priority")
+def update_priority(hid:int,data:PriorityInput,u:User=Depends(auth),s:Session=Depends(db),today:date=Depends(client_today)):
+    h=owned(hid,u,s)
+    h.priority=data.priority
+    s.commit()
+    return habit_out(s,h,today)
 @app.post("/habits/{hid}/archive")
 def archive(hid:int,u:User=Depends(auth),s:Session=Depends(db),today:date=Depends(client_today)):
     h=owned(hid,u,s)
@@ -609,3 +637,107 @@ def insights(u:User=Depends(auth),s:Session=Depends(db),today:date=Depends(clien
     if weekday:
         rate,index,total=max(weekday); result.append({"type":"weekday","title":f"{['Monday','Tuesday','Wednesday','Thursday','Friday','Saturday','Sunday'][index]} is your strongest day","explanation":f"You completed {rate}% of {total} scheduled opportunities on that weekday in the last 8 weeks.","values":{"weekday":index,"rate":rate,"scheduled":total},"action":"Use that day for your most important habit."})
     return result[:8]
+
+# The API stores due events; an active browser performs EmailJS requests.
+def notification_preferences(s,u):
+    row=s.get(NotificationPreference,u.id)
+    if row is None:
+        row=NotificationPreference(user_id=u.id); s.add(row); s.flush()
+    return row
+def preference_out(row): return {key:bool(getattr(row,key)) for key in ("email_enabled","pending","missed","streak_at_risk","achievement")}
+def notification_out(row):
+    return {"id":row.id,"kind":row.kind,"title":row.title,"message":row.message,"habit_id":row.habit_id,"habit_name":row.habit_name,"event_date":row.event_date.isoformat() if row.event_date else None,"is_demo":bool(row.is_demo),"created_at":row.created_at.isoformat()+"Z","read":row.read_at is not None,"email_status":row.email_status}
+def owned_notification(s,u,nid):
+    row=s.query(Notification).filter_by(id=nid,user_id=u.id).first()
+    if row is None: raise HTTPException(404,"Notification not found.")
+    return row
+def add_notification(s,u,key,kind,title,message,habit=None,event_date=None):
+    if s.query(Notification).filter_by(user_id=u.id,event_key=key).first(): return
+    s.add(Notification(user_id=u.id,event_key=key,kind=kind,title=title,message=message,habit_id=habit.id if habit else None,habit_name=habit.name if habit else "",event_date=event_date))
+def materialize_notifications(s,u,now):
+    today=now.date(); yesterday=today-timedelta(days=1); pref=notification_preferences(s,u)
+    for h in habits(s,u):
+        completed=dates(s,h)
+        if pref.pending and occurs(h,today) and today not in completed and h.reminder_time and now.strftime("%H:%M")>=h.reminder_time:
+            add_notification(s,u,f"pending:{h.id}:{today}","pending",f"A little win is waiting: {h.name}",f"A few minutes with {h.name} can make today count.",h,today)
+        if pref.missed and occurs(h,yesterday) and yesterday not in completed:
+            add_notification(s,u,f"missed:{h.id}:{yesterday}","missed",f"A fresh start for {h.name}",f"Yesterday's {h.name} check-in did not happen. Today is a new opportunity.",h,yesterday)
+    done,total=day_status(s,u,today)
+    if pref.streak_at_risk and now.hour>=18 and total and done<total and overall(s,u,today)>0:
+        add_notification(s,u,f"streak_at_risk:{today}","streak_at_risk","Your streak can keep growing",f"You have {total-done} scheduled {'habit' if total-done==1 else 'habits'} left today. One small step at a time.",event_date=today)
+    if pref.achievement:
+        for achievement in s.query(Achievement).filter_by(user_id=u.id).all():
+            definition=next((item for item in ACHIEVEMENT_DEFS if item["code"]==achievement.code),None)
+            if definition: add_notification(s,u,f"achievement:{achievement.code}","achievement",f"Achievement unlocked: {definition['title']}",definition["description"],event_date=achievement.unlocked_on)
+        for current_level in range(2,level(u.xp)["level"]+1):
+            add_notification(s,u,f"level:{current_level}","achievement",f"Level {current_level} reached!","Your steady efforts are adding up. Keep collecting little wins.",event_date=today)
+    s.commit()
+
+@app.get("/notification-preferences")
+def get_notification_preferences(u:User=Depends(auth),s:Session=Depends(db)):
+    row=notification_preferences(s,u); s.commit(); return preference_out(row)
+@app.put("/notification-preferences")
+def put_notification_preferences(data:NotificationPreferencesInput,u:User=Depends(auth),s:Session=Depends(db)):
+    row=notification_preferences(s,u)
+    for key,value in data.model_dump().items(): setattr(row,key,int(value))
+    s.commit(); return preference_out(row)
+@app.get("/notifications")
+def list_notifications(u:User=Depends(auth),s:Session=Depends(db),now:datetime=Depends(client_now)):
+    materialize_notifications(s,u,now)
+    rows=s.query(Notification).filter_by(user_id=u.id,dismissed_at=None).order_by(Notification.id.desc()).limit(100).all()
+    return {"items":[notification_out(row) for row in rows],"unread_count":s.query(Notification).filter_by(user_id=u.id,read_at=None,dismissed_at=None).count()}
+@app.get("/notifications/unread-count")
+def unread_notifications(u:User=Depends(auth),s:Session=Depends(db),now:datetime=Depends(client_now)):
+    materialize_notifications(s,u,now)
+    return {"unread_count":s.query(Notification).filter_by(user_id=u.id,read_at=None,dismissed_at=None).count()}
+@app.get("/notifications/due")
+def due_notifications(u:User=Depends(auth),s:Session=Depends(db),now:datetime=Depends(client_now)):
+    materialize_notifications(s,u,now); pref=notification_preferences(s,u)
+    if not pref.email_enabled: return {"items":[]}
+    rows=s.query(Notification).filter_by(user_id=u.id,email_status="pending",is_demo=0).order_by(Notification.id).limit(20).all()
+    return {"items":[notification_out(row) for row in rows if row.kind!="test" and getattr(pref,row.kind,0) and row.event_date and ((row.kind in ("pending","streak_at_risk") and row.event_date==now.date()) or (row.kind in ("missed","achievement") and 0<=(now.date()-row.event_date).days<=1))]}
+@app.post("/notifications/{nid}/read")
+def read_notification(nid:int,u:User=Depends(auth),s:Session=Depends(db)):
+    row=owned_notification(s,u,nid); row.read_at=row.read_at or utc_now(); s.commit(); return notification_out(row)
+@app.post("/notifications/{nid}/dismiss")
+def dismiss_notification(nid:int,u:User=Depends(auth),s:Session=Depends(db)):
+    row=owned_notification(s,u,nid); row.dismissed_at=utc_now(); s.commit(); return notification_out(row)
+@app.post("/notifications/{nid}/email-claim")
+def claim_notification_email(nid:int,u:User=Depends(auth),s:Session=Depends(db),now:datetime=Depends(client_now)):
+    row=owned_notification(s,u,nid); pref=notification_preferences(s,u)
+    if row.kind!="test" and not row.is_demo and (not pref.email_enabled or not getattr(pref,row.kind,0)): raise HTTPException(409,"Email notifications are disabled in Settings.")
+    if not row.is_demo and row.kind in ("pending","streak_at_risk") and row.event_date!=now.date(): raise HTTPException(409,"This reminder is no longer current.")
+    if not row.is_demo and row.kind=="pending" and row.habit_id:
+        h=s.query(Habit).filter_by(id=row.habit_id,user_id=u.id).first()
+        if not h or not occurs(h,now.date()) or now.date() in dates(s,h): raise HTTPException(409,"This habit no longer needs a reminder.")
+    if not row.is_demo and row.kind=="streak_at_risk":
+        done,total=day_status(s,u,now.date())
+        if not total or done==total or overall(s,u,now.date())==0: raise HTTPException(409,"This streak no longer needs a reminder.")
+    if not row.is_demo and row.kind=="missed" and (not row.event_date or (now.date()-row.event_date).days>1): raise HTTPException(409,"This missed-day reminder is no longer current.")
+    changed=s.query(Notification).filter_by(id=nid,user_id=u.id,email_status="pending").update({Notification.email_status:"attempted",Notification.email_attempted_at:utc_now()},synchronize_session=False)
+    if not changed: raise HTTPException(409,"An email request was already attempted for this notification.")
+    s.commit(); return notification_out(owned_notification(s,u,nid))
+@app.post("/notifications/{nid}/email-outcome")
+def notification_email_outcome(nid:int,data:EmailOutcomeInput,u:User=Depends(auth),s:Session=Depends(db)):
+    if data.status not in ("accepted","failed"): raise HTTPException(422,"Status must be accepted or failed.")
+    row=owned_notification(s,u,nid)
+    if row.email_status!="attempted": raise HTTPException(409,"This notification has no open email attempt.")
+    row.email_status=data.status; s.commit(); return notification_out(row)
+@app.post("/notifications/test",status_code=201)
+def create_test_notification(u:User=Depends(auth),s:Session=Depends(db)):
+    recent=s.query(Notification).filter(Notification.user_id==u.id,Notification.kind=="test",Notification.created_at>=utc_now()-timedelta(seconds=60)).first()
+    if recent: raise HTTPException(429,"Wait one minute before requesting another test email.")
+    row=Notification(user_id=u.id,event_key=f"test:{token_urlsafe(12)}",kind="test",title="A little win from Little Wins",message="This is a test of Little Wins email notifications.",created_at=utc_now())
+    s.add(row); s.commit(); return notification_out(row)
+@app.post("/notifications/demo",status_code=201)
+def create_demo_notification(data:DemoNotificationInput,u:User=Depends(auth),s:Session=Depends(db)):
+    examples={"pending":("Your reading habit is waiting","A few minutes of reading can make today count.","Reading"),"missed":("A fresh start for your walk","Yesterday's walk did not happen. Today is a new opportunity.","Walking"),"streak_at_risk":("Your streak can keep growing","One small check-in today can keep your momentum going.","Daily practice"),"achievement":("Achievement unlocked: First Step","You completed your first habit. Celebrate that little win!","")}
+    if data.kind not in examples: raise HTTPException(422,"Choose a supported demo notification type.")
+    if s.query(Notification).filter(Notification.user_id==u.id,Notification.is_demo==1,Notification.created_at>=utc_now()-timedelta(seconds=3)).first(): raise HTTPException(429,"Wait a moment before creating another preview.")
+    if s.query(Notification).filter(Notification.user_id==u.id,Notification.is_demo==1,Notification.created_at>=utc_now()-timedelta(days=1)).count()>=20: raise HTTPException(429,"The daily preview limit was reached. Try again tomorrow.")
+    title,message,habit_name=examples[data.kind]
+    row=Notification(user_id=u.id,event_key=f"demo:{token_urlsafe(12)}",kind=data.kind,title=title,message=message,habit_name=habit_name,is_demo=1,created_at=utc_now())
+    s.add(row); s.commit(); return notification_out(row)
+@app.delete("/notifications/demo",status_code=204)
+def clear_demo_notifications(u:User=Depends(auth),s:Session=Depends(db)):
+    s.query(Notification).filter_by(user_id=u.id,is_demo=1,dismissed_at=None).update({Notification.dismissed_at:utc_now()},synchronize_session=False); s.commit()

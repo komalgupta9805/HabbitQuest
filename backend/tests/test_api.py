@@ -2,10 +2,15 @@ from datetime import date, datetime, timedelta
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 import importlib
 import os
+import sqlite3
+import subprocess
+import sys
 os.environ["HABITQUEST_DATABASE_URL"] = "sqlite:///./habitquest-test.db"
 import pytest
 from fastapi.testclient import TestClient
-from app.main import app, Base, engine, SessionLocal, Achievement, Completion, Habit, Invitation, User, XPTransaction
+from sqlalchemy import create_engine
+from sqlalchemy.orm import Session
+from app.main import app, Base, engine, SessionLocal, Achievement, Completion, Habit, Invitation, User, XPTransaction, client_now
 
 client = TestClient(app)
 @pytest.fixture(autouse=True)
@@ -16,6 +21,116 @@ def register(email="a@example.com",name="Ava"):
     return {"Authorization":"Bearer "+response.json()["token"]}
 def habit(headers,name="Read",schedule="daily"):
     return client.post("/habits",headers=headers,json={"name":name,"description":"test","category":"Study","schedule":schedule}).json()
+
+@pytest.mark.parametrize("priority",["High","Medium","Low"])
+def test_habit_priority_creation_and_persistence(priority):
+    headers=register()|{"X-Time-Zone":"Asia/Kolkata"}
+    response=client.post("/habits",headers=headers,json={"name":"Read","priority":priority})
+    assert response.status_code==201
+    hid=response.json()["id"]
+    assert response.json()["priority"]==priority
+    assert client.get(f"/habits/{hid}",headers=headers).json()["priority"]==priority
+    assert client.get("/dashboard",headers=headers).json()["habits"][0]["priority"]==priority
+
+def test_habit_priority_update_validation_and_streak():
+    headers=register()|{"X-Time-Zone":"Asia/Kolkata"}
+    other=register("other@example.com")|{"X-Time-Zone":"Asia/Kolkata"}
+    row=habit(headers)
+    hid=row["id"]
+    assert row["priority"]=="Medium"
+    today=datetime.now(ZoneInfo("Asia/Kolkata")).date().isoformat()
+    assert client.post(f"/habits/{hid}/complete",headers=headers,json={"completed_on":today}).status_code==200
+    before=client.get(f"/habits/{hid}",headers=headers).json()
+    updated=client.patch(f"/habits/{hid}/priority",headers=headers,json={"priority":"High"})
+    assert updated.status_code==200 and updated.json()["priority"]=="High"
+    after=client.get(f"/habits/{hid}",headers=headers).json()
+    assert after["priority"]=="High" and after["done_today"] is True
+    assert (after["current"],after["longest"],after["completed_days"])==(before["current"],before["longest"],before["completed_days"])
+    assert client.get("/dashboard",headers=headers).json()["habits"][0]["priority"]=="High"
+    assert client.put(f"/habits/{hid}",headers=headers,json={"name":"Read","priority":"Low"}).json()["priority"]=="Low"
+    assert client.patch(f"/habits/{hid}/priority",headers=headers,json={"priority":"Urgent"}).status_code==422
+    assert client.post("/habits",headers=headers,json={"name":"Invalid","priority":"Urgent"}).status_code==422
+    assert client.patch(f"/habits/{hid}/priority",headers=other,json={"priority":"High"}).status_code==404
+
+def test_legacy_habit_priority_column_defaults_to_medium(tmp_path):
+    db_path=tmp_path/"legacy-priority.db"
+    legacy_engine=create_engine(f"sqlite:///{db_path.as_posix()}")
+    Base.metadata.create_all(legacy_engine)
+    with Session(legacy_engine) as session:
+        user=User(name="Legacy",email="legacy@example.com",password_hash="test",token="legacy-token")
+        session.add(user); session.flush()
+        session.add(Habit(user_id=user.id,name="Saved before priorities",priority="Medium"))
+        session.commit()
+    legacy_engine.dispose()
+    with sqlite3.connect(db_path) as connection:
+        connection.execute("ALTER TABLE habits DROP COLUMN priority")
+    environment=os.environ.copy(); environment["HABITQUEST_DATABASE_URL"]=f"sqlite:///{db_path.as_posix()}"
+    result=subprocess.run([sys.executable,"-c","import app.main"],cwd=os.path.dirname(os.path.dirname(__file__)),env=environment,capture_output=True,text=True,timeout=30)
+    assert result.returncode==0,result.stderr
+    with sqlite3.connect(db_path) as connection:
+        assert connection.execute("SELECT priority FROM habits WHERE name=?",("Saved before priorities",)).fetchone()[0]=="Medium"
+
+def test_notifications_preferences_ownership_and_email_attempts():
+    a=register()|{"X-Time-Zone":"Asia/Kolkata"}; b=register("b@example.com")|{"X-Time-Zone":"Asia/Kolkata"}
+    pref=client.get("/notification-preferences",headers=a).json()
+    assert pref["email_enabled"] is False
+    pref["email_enabled"]=True
+    assert client.put("/notification-preferences",headers=a,json=pref).json()["email_enabled"] is True
+    assert client.get("/notification-preferences",headers=b).json()["email_enabled"] is False
+    item=client.post("/notifications/test",headers=a).json()
+    assert item["message"]=="This is a test of Little Wins email notifications."
+    assert client.post("/notifications/test",headers=a).status_code==429
+    assert client.post(f"/notifications/{item['id']}/read",headers=b).status_code==404
+    assert client.post(f"/notifications/{item['id']}/dismiss",headers=b).status_code==404
+    assert client.post(f"/notifications/{item['id']}/email-claim",headers=b).status_code==404
+    assert client.post(f"/notifications/{item['id']}/email-claim",headers=a).json()["email_status"]=="attempted"
+    assert client.post(f"/notifications/{item['id']}/email-claim",headers=a).status_code==409
+    assert client.post(f"/notifications/{item['id']}/email-outcome",headers=a,json={"status":"accepted"}).json()["email_status"]=="accepted"
+    assert client.post(f"/notifications/{item['id']}/email-outcome",headers=a,json={"status":"failed"}).status_code==409
+    failed=client.post("/notifications/test",headers=b).json()
+    assert client.post(f"/notifications/{failed['id']}/email-claim",headers=b).json()["email_status"]=="attempted"
+    assert client.post(f"/notifications/{failed['id']}/email-outcome",headers=b,json={"status":"failed"}).json()["email_status"]=="failed"
+    assert client.get("/notifications",headers=b).json()["items"][0]["email_status"]=="failed"
+    assert client.post(f"/notifications/{failed['id']}/email-outcome",headers=b,json={"status":"accepted"}).status_code==409
+    assert client.post(f"/notifications/{item['id']}/read",headers=a).json()["read"] is True
+    assert client.get("/notifications/unread-count",headers=a).json()["unread_count"]==0
+    assert client.post(f"/notifications/{item['id']}/dismiss",headers=a).status_code==200
+    assert client.get("/notifications",headers=a).json()["items"]==[]
+
+def test_notification_due_dates_dedup_and_preferences():
+    headers=register()|{"X-Time-Zone":"Asia/Kolkata"}; item=habit(headers); today=date.today()
+    with SessionLocal() as session:
+        row=session.query(Habit).filter_by(id=item["id"]).one()
+        row.created_on=today-timedelta(days=1); row.reminder_time="08:00"; session.commit()
+    zone=ZoneInfo("Asia/Kolkata")
+    app.dependency_overrides[client_now]=lambda: datetime.combine(today-timedelta(days=1),datetime.min.time().replace(hour=23,minute=59),tzinfo=zone)
+    try:
+        before=client.get("/notifications",headers=headers).json()["items"]
+        assert not any(x["kind"]=="missed" for x in before)
+        app.dependency_overrides[client_now]=lambda: datetime.combine(today,datetime.min.time().replace(hour=9),tzinfo=zone)
+        first=client.get("/notifications",headers=headers).json()["items"]
+        assert len([x for x in first if x["kind"]=="missed"])==1
+        assert len([x for x in first if x["kind"]=="pending" and x["event_date"]==today.isoformat()])==1
+        assert len(client.get("/notifications",headers=headers).json()["items"])==len(first)
+        prefs=client.get("/notification-preferences",headers=headers).json()
+        prefs["email_enabled"]=True; prefs["pending"]=False
+        client.put("/notification-preferences",headers=headers,json=prefs)
+        assert all(x["kind"]!="pending" for x in client.get("/notifications/due",headers=headers).json()["items"])
+    finally: app.dependency_overrides.pop(client_now,None)
+
+def test_demo_notification_is_isolated_from_habit_progress():
+    headers=register()|{"X-Time-Zone":"Asia/Kolkata"}; other=register("other@example.com")|{"X-Time-Zone":"Asia/Kolkata"}
+    before=client.get("/dashboard",headers=headers).json()
+    first=client.post("/notifications/demo",headers=headers,json={"kind":"achievement"}).json()
+    assert first["is_demo"] and first["kind"]=="achievement"
+    assert client.get("/notifications",headers=other).json()["items"]==[]
+    after=client.get("/dashboard",headers=headers).json()
+    assert after["user"]["xp"]==before["user"]["xp"]
+    assert after["achievements"]==before["achievements"]
+    assert client.delete("/notifications/demo",headers=other).status_code==204
+    assert client.get("/notifications",headers=headers).json()["items"][0]["id"]==first["id"]
+    assert client.delete("/notifications/demo",headers=headers).status_code==204
+    assert client.get("/notifications",headers=headers).json()["items"]==[]
 def test_habit_crud_and_user_isolation():
     a=register(); b=register("b@example.com"); created=habit(a)
     assert client.get("/habits",headers=a).json()[0]["name"]=="Read"
