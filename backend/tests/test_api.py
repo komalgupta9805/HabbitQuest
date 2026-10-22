@@ -10,7 +10,7 @@ import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy import create_engine
 from sqlalchemy.orm import Session
-from app.main import app, Base, engine, SessionLocal, Achievement, Completion, Habit, Invitation, User, XPTransaction, client_now
+from app.main import app, Base, engine, SessionLocal, Achievement, Completion, HABIT_COLORS, Habit, Invitation, User, XPTransaction, client_now
 
 client = TestClient(app)
 @pytest.fixture(autouse=True)
@@ -209,6 +209,14 @@ def test_completion_undo_xp_and_duplicate_protection():
     assert client.post(f"/habits/{item['id']}/complete",headers=h,json={}).status_code==409
     # The completion and daily bonus are reversed; a permanently earned badge is not revoked.
     assert client.request("DELETE",f"/habits/{item['id']}/complete",headers=h,json={}).json()["xp"]==10
+
+def test_measurable_habit_can_be_marked_complete_without_entering_progress():
+    headers=register()
+    item=client.post("/habits",headers=headers,json={"name":"DSA","daily_target":4,"target_unit":"hrs"}).json()
+    completed=client.post(f"/habits/{item['id']}/complete",headers=headers,json={})
+    assert completed.status_code==200
+    day=client.get(f"/days/{date.today().isoformat()}",headers=headers).json()
+    assert day["habits"][0]["done"] is True
 def test_dashboard_real_quest_bonus_heatmap_and_achievement():
     h=register(); first=habit(h,"Read"); second=habit(h,"Move")
     client.post(f"/habits/{first['id']}/complete",headers=h,json={})
@@ -449,6 +457,13 @@ def test_supported_habit_icon_is_saved_edited_and_validated():
     assert invalid.status_code==422
     status_colour=client.post("/habits",headers=headers,json={"name":"Status coloured","color":"#2E9E6F"})
     assert status_colour.status_code==422
+
+def test_every_curated_identity_colour_is_accepted():
+    headers=register()
+    for index, color in enumerate(HABIT_COLORS):
+        response=client.post("/habits",headers=headers,json={"name":f"Colour {index}","color":color})
+        assert response.status_code==201
+        assert response.json()["color"]==color
 
 def test_calendar_separates_day_status_from_each_habit_identity_color():
     headers=register(); first=habit(headers,"Study"); second=client.post("/habits",headers=headers,json={"name":"Water","icon":"water","color":"#0EA5E9"}).json()

@@ -15,7 +15,10 @@ from .security import hash_password, issue_token, token_is_valid, verify_passwor
 # Habit identity colours deliberately avoid the green, orange and red status palette.
 # This lets a calendar show "complete / partial / missed" independently from the
 # habit that produced an activity dot.
-HABIT_COLORS = ("#4F46E5", "#2563EB", "#7C3AED", "#0EA5E9", "#8B5CF6", "#64748B", "#A855F7", "#0369A1", "#6D28D9", "#334155", "#6366F1", "#1D4ED8")
+# Keep this list in sync with the curated picker in frontend/src/main.jsx.
+# The picker only offers these identity colours, all kept separate from the
+# green/orange/red completion-status palette.
+HABIT_COLORS = ("#4F46E5", "#EC4899", "#06B6D4", "#EAB308", "#A855F7", "#14B8A6", "#F472B6", "#3B82F6", "#D946EF", "#64748B", "#818CF8", "#0EA5E9")
 LEGACY_DEFAULT_HABIT_COLORS = {"#2E9E6F", "#E58A2B", "#735DD0", "#3182CE", "#159A9C", "#D85B7B", "#8A6D3B", "#567C3E", "#C45A3C", "#5B6FC0", "#B56BA7", "#2F8F9D", "#C98B2E", "#6A8E3A", "#9B5DE5", "#008C72", "#C65D7B", "#4A7C9B", "#A66A48", "#6B7F33"}
 HABIT_ICONS = {"water","exercise","walk","book","study","code","meditate","sleep","nutrition","health","target","sparkles"}
 LEGACY_HABIT_ICONS = {"✦","⌘","↗","◎","◆"}
