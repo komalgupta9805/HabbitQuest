@@ -10,7 +10,8 @@ import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy import create_engine
 from sqlalchemy.orm import Session
-from app.main import app, Base, engine, SessionLocal, Achievement, Completion, HABIT_COLORS, Habit, Invitation, User, XPTransaction, client_now
+from app import main as app_main
+from app.main import app, Base, engine, SessionLocal, Achievement, Completion, HABIT_COLORS, Habit, Invitation, PasswordReset, User, XPTransaction, client_now
 
 client = TestClient(app)
 @pytest.fixture(autouse=True)
@@ -21,6 +22,31 @@ def register(email="a@example.com",name="Ava"):
     return {"Authorization":"Bearer "+response.json()["token"]}
 def habit(headers,name="Read",schedule="daily"):
     return client.post("/habits",headers=headers,json={"name":name,"description":"test","category":"Study","schedule":schedule}).json()
+
+def test_password_reset_sends_only_to_registered_account_and_invalidates_sessions(monkeypatch):
+    headers=register("recover@example.com",name="Recover Me")
+    deliveries=[]
+    monkeypatch.setattr(app_main,"send_password_reset_email",lambda user,token: deliveries.append((user.email,token)))
+    response=client.post("/auth/password-reset/request",json={"email":"recover@example.com"})
+    assert response.status_code==202 and "If an account exists" in response.json()["message"]
+    assert len(deliveries)==1 and deliveries[0][0]=="recover@example.com"
+    token=deliveries[0][1]
+    changed=client.post("/auth/password-reset/confirm",json={"token":token,"password":"new-password"})
+    assert changed.status_code==200
+    assert client.get("/me",headers=headers).status_code==401
+    assert client.post("/auth/login",json={"email":"recover@example.com","password":"password"}).status_code==401
+    assert client.post("/auth/login",json={"email":"recover@example.com","password":"new-password"}).status_code==200
+    assert client.post("/auth/password-reset/confirm",json={"token":token,"password":"another-password"}).status_code==400
+
+def test_password_reset_does_not_leave_a_usable_token_when_delivery_fails(monkeypatch):
+    headers=register("reset-failure@example.com")
+    def fail_delivery(*_args): raise RuntimeError("mail unavailable")
+    monkeypatch.setattr(app_main,"send_password_reset_email",fail_delivery)
+    response=client.post("/auth/password-reset/request",json={"email":"reset-failure@example.com"})
+    assert response.status_code==202
+    with SessionLocal() as session:
+        reset=session.query(PasswordReset).one()
+        assert reset.used_at is not None
 
 @pytest.mark.parametrize("priority",["High","Medium","Low"])
 def test_habit_priority_creation_and_persistence(priority):

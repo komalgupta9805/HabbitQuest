@@ -51,7 +51,7 @@ Use `.env.example` as the configuration reference. `HABITQUEST_DATABASE_URL` con
 
 ## EmailJS notifications
 
-Copy `frontend/.env.example` to `frontend/.env`. Replace `YOUR_PUBLIC_KEY` with your real EmailJS public key. The supplied service and template IDs are `service_odu5d78` and `template_xjkmtun`. Set `VITE_APP_URL` to the browser URL for this app (including its deployment origin in production). Restart Vite after editing `.env`. The `.env` file is ignored by Git; `.env.example` is tracked. The EmailJS public key is a browser identifier, so use EmailJS allowed-domain restrictions and account limits. Do not enter Gmail credentials in this app.
+Copy `frontend/.env.example` to `frontend/.env`. Replace `YOUR_PUBLIC_KEY` with your real EmailJS public key. The supplied service and template IDs are `service_4hz71oq` and `template_xjkmtun`. Set `VITE_APP_URL` to the browser URL for this app (including its deployment origin in production). Restart Vite after editing `.env`. The `.env` file is ignored by Git; `.env.example` is tracked. The EmailJS public key is a browser identifier, so use EmailJS allowed-domain restrictions and account limits. Do not enter Gmail credentials in this app.
 
 Configure the EmailJS template with **To Email** `{{to_email}}` or `{{email}}`, **To Name** `{{to_name}}`, and **Subject** `{{subject}}`. The body should include `{{message}}`, and may include `{{habit_name}}`, `{{notification_type}}`, and `{{app_url}}`. A suggested concise body is: “Hi {{to_name}}, every little step counts! {{message}} Open Little Wins: {{app_url}}”. The browser SDK supplies both recipient variables with the same signed-in account email from `GET /me`.
 
@@ -64,6 +64,12 @@ For a presentation, open **Settings → Demo Notifications** and use the four Pr
 The API computes due events using the browser's `X-Time-Zone` IANA identifier. Pending reminders require a habit reminder time and an incomplete, scheduled local day. Missed notices are created only after that local day ends. Streak reminders become due after 18:00 local time when a current streak has incomplete scheduled habits. Achievement and level-up events follow persisted milestones. Each event has a per-user unique key. The bell refreshes while the app is open; eligible routine emails are claimed once before the browser SDK call. Email status distinguishes `pending`, `attempted`, `accepted` by EmailJS, and `failed`. An interrupted attempt remains `attempted` so it cannot silently send twice; create a new test event after the cooldown if needed. EmailJS in the browser cannot send while the browser is closed. Reliable background delivery would require a separate server-side delivery service, which this project does not configure.
 
 The backend creates `notifications` and `notification_preferences` tables on startup through its existing `create_all` convention. No database reset or manual migration command is required. Notification endpoints require the existing bearer token; listing, preferences, marking read, dismissing, previews, and email outcomes are scoped to the authenticated user. Notification requests require `X-Time-Zone`; clients without a valid IANA time zone receive a clear validation error.
+
+## Password recovery
+
+On the sign-in screen, choose **Forgot password?**, enter the registered email address, then use the one-time link delivered by EmailJS to choose a new password. The link expires after 30 minutes and invalidates all existing sessions once used. For this secure server-side send, also copy the EmailJS values into ignored `backend/.env` as `EMAILJS_PUBLIC_KEY`, `EMAILJS_SERVICE_ID`, `EMAILJS_TEMPLATE_ID`, and set `APP_URL` to the exact frontend URL. The reset endpoint always reports the same response for registered and unregistered addresses, so accounts cannot be discovered through recovery requests.
+
+Because reset links are created server-side so their tokens never reach the browser, enable **API access from non-browser environments** in EmailJS at **Account → Security**. EmailJS otherwise returns HTTP 403 before accepting the message. Keep the browser-facing origin restrictions enabled for the normal frontend notification feature.
 
 ## Test the API
 

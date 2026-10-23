@@ -91,8 +91,10 @@ function AppIcon({ name, size = 18, className = '' }) {
 function HabitGlyph({ name, size = 18 }) { return <AppIcon name={HABIT_ICONS.some(([id]) => id === name) ? name : 'sparkles'} size={size} />; }
 
 function Auth({ onAuthenticated, inviteToken = '' }) {
-  const [mode, setMode] = useState('register');
+  const resetToken = new URLSearchParams(location.search).get('reset_token') || '';
+  const [mode, setMode] = useState(resetToken ? 'reset' : 'register');
   const [form, setForm] = useState({ name: '', email: '', password: '', invite_token: inviteToken });
+  const [confirmation, setConfirmation] = useState('');
   const [status, setStatus] = useState({ busy: false, message: '' });
   const [invite, setInvite] = useState(inviteToken ? { loading: true } : null);
   useEffect(() => { if (inviteToken) api(`/invites/${encodeURIComponent(inviteToken)}`).then(setInvite).catch(error => setInvite({ error: error.message })); }, [inviteToken]);
@@ -100,10 +102,20 @@ function Auth({ onAuthenticated, inviteToken = '' }) {
     event.preventDefault();
     setStatus({ busy: true, message: '' });
     try {
-      const result = await api(`/auth/${mode}`, { method: 'POST', body: form });
-      localStorage.setItem('hqToken', result.token);
-      setStatus({ busy: false, message: mode === 'register' ? 'Account created.' : 'Signed in.' });
-      onAuthenticated(result.token);
+      if (mode === 'forgot') {
+        const result = await api('/auth/password-reset/request', { method: 'POST', body: { email: form.email } });
+        setStatus({ busy: false, message: result.message });
+      } else if (mode === 'reset') {
+        if (form.password !== confirmation) throw new Error('Passwords do not match.');
+        const result = await api('/auth/password-reset/confirm', { method: 'POST', body: { token: resetToken, password: form.password } });
+        history.replaceState({}, '', location.pathname);
+        setMode('login'); setConfirmation(''); setStatus({ busy: false, message: result.message });
+      } else {
+        const result = await api(`/auth/${mode}`, { method: 'POST', body: form });
+        localStorage.setItem('hqToken', result.token);
+        setStatus({ busy: false, message: mode === 'register' ? 'Account created.' : 'Signed in.' });
+        onAuthenticated(result.token);
+      }
     } catch (error) {
       setStatus({ busy: false, message: error.message });
     }
@@ -111,16 +123,19 @@ function Auth({ onAuthenticated, inviteToken = '' }) {
   return <div className="auth-screen"><form className="auth-card" onSubmit={submit}>
     <Logo dark />
     <p className="eyebrow">YOUR CONSISTENCY ADVENTURE</p>
-    <h1>{mode === 'register' ? 'Begin with one small promise.' : 'Welcome back.'}</h1>
+    <h1>{mode === 'register' ? 'Begin with one small promise.' : mode === 'forgot' ? 'Reset your password.' : mode === 'reset' ? 'Choose a new password.' : 'Welcome back.'}</h1>
     {mode === 'register' && inviteToken && <p className={invite?.error ? 'form-error' : 'invite-note'}>{invite?.loading ? 'Checking your invitation…' : invite?.error || `${invite.inviter_display_name} invited you to ${BRAND_NAME}. Create an account to join; leaderboard participation stays optional.`}</p>}
     {mode === 'register' && <Field label="Name"><input required maxLength="80" value={form.name} onChange={e => setForm({ ...form, name: e.target.value })} /></Field>}
-    <Field label="Email"><input required type="email" value={form.email} onChange={e => setForm({ ...form, email: e.target.value })} /></Field>
-    <Field label="Password"><input required minLength="6" type="password" value={form.password} onChange={e => setForm({ ...form, password: e.target.value })} /></Field>
+    {mode !== 'reset' && <Field label="Email"><input required type="email" value={form.email} onChange={e => setForm({ ...form, email: e.target.value })} /></Field>}
+    {mode !== 'forgot' && <Field label={mode === 'reset' ? 'New password' : 'Password'}><input required minLength="6" type="password" value={form.password} onChange={e => setForm({ ...form, password: e.target.value })} /></Field>}
+    {mode === 'reset' && <Field label="Confirm new password"><input required minLength="6" type="password" value={confirmation} onChange={e => setConfirmation(e.target.value)} /></Field>}
     {status.message && <p className={status.message.endsWith('.') ? 'form-note' : 'form-error'}>{status.message}</p>}
-    <button className="primary" disabled={status.busy}>{status.busy ? 'Working…' : mode === 'register' ? 'Create account' : 'Sign in'}</button>
-    <button className="link-button" type="button" onClick={() => { setMode(mode === 'register' ? 'login' : 'register'); setStatus({ busy: false, message: '' }); }}>
+    <button className="primary" disabled={status.busy}>{status.busy ? 'Working…' : mode === 'register' ? 'Create account' : mode === 'login' ? 'Sign in' : mode === 'forgot' ? 'Email reset link' : 'Update password'}</button>
+    {mode === 'login' && <button className="link-button" type="button" onClick={() => { setMode('forgot'); setStatus({ busy: false, message: '' }); }}>Forgot password?</button>}
+    {mode !== 'reset' && <button className="link-button" type="button" onClick={() => { setMode(mode === 'register' ? 'login' : 'register'); setStatus({ busy: false, message: '' }); }}>
       {mode === 'register' ? 'Already registered? Sign in' : 'New here? Create an account'}
-    </button>
+    </button>}
+    {mode === 'forgot' && <button className="link-button" type="button" onClick={() => { setMode('login'); setStatus({ busy: false, message: '' }); }}>Back to sign in</button>}
   </form></div>;
 }
 

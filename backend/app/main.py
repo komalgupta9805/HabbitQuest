@@ -4,12 +4,13 @@ from hashlib import sha256
 from secrets import token_urlsafe
 from typing import Generator, Literal
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError, available_timezones
+import httpx
 from fastapi import Depends, FastAPI, Header, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field, field_validator
 from sqlalchemy import Column, Date, DateTime, Float, ForeignKey, Integer, String, UniqueConstraint, create_engine, inspect, text
 from sqlalchemy.orm import Session, declarative_base, relationship, sessionmaker
-from .config import ACHIEVEMENT_XP, COMPLETION_XP, CORS_ORIGINS, CORS_ORIGIN_REGEX, DAILY_BONUS_XP, DATABASE_URL
+from .config import ACHIEVEMENT_XP, APP_URL, COMPLETION_XP, CORS_ORIGINS, CORS_ORIGIN_REGEX, DAILY_BONUS_XP, DATABASE_URL, EMAILJS_PUBLIC_KEY, EMAILJS_SERVICE_ID, EMAILJS_TEMPLATE_ID
 from .security import hash_password, issue_token, token_is_valid, verify_password
 
 # Habit identity colours deliberately avoid the green, orange and red status palette.
@@ -53,6 +54,8 @@ class NotificationPreference(Base):
     __tablename__="notification_preferences"; user_id=Column(Integer,ForeignKey("users.id"),primary_key=True); email_enabled=Column(Integer,default=0,nullable=False); pending=Column(Integer,default=1,nullable=False); missed=Column(Integer,default=1,nullable=False); streak_at_risk=Column(Integer,default=1,nullable=False); achievement=Column(Integer,default=1,nullable=False)
 class Notification(Base):
     __tablename__="notifications"; id=Column(Integer,primary_key=True); user_id=Column(Integer,ForeignKey("users.id"),nullable=False,index=True); event_key=Column(String(180),nullable=False); kind=Column(String(30),nullable=False); title=Column(String(160),nullable=False); message=Column(String(400),nullable=False); habit_id=Column(Integer,nullable=True); habit_name=Column(String(80),default="",nullable=False); event_date=Column(Date,nullable=True); is_demo=Column(Integer,default=0,nullable=False); created_at=Column(DateTime,default=utc_now,nullable=False); read_at=Column(DateTime,nullable=True); dismissed_at=Column(DateTime,nullable=True); email_status=Column(String(20),default="pending",nullable=False); email_attempted_at=Column(DateTime,nullable=True); __table_args__=(UniqueConstraint("user_id","event_key",name="unique_user_notification_event"),)
+class PasswordReset(Base):
+    __tablename__="password_resets"; id=Column(Integer,primary_key=True); user_id=Column(Integer,ForeignKey("users.id"),nullable=False,index=True); token_hash=Column(String(64),unique=True,nullable=False,index=True); expires_at=Column(DateTime,nullable=False); used_at=Column(DateTime,nullable=True); created_at=Column(DateTime,default=utc_now,nullable=False)
 Base.metadata.create_all(engine)
 # Lightweight backward-compatible migration for local project databases.
 _columns={c["name"] for c in inspect(engine).get_columns("habits")}
@@ -90,6 +93,8 @@ app.add_middleware(
     allow_headers=["Authorization", "Content-Type", "X-Time-Zone"],
 )
 class Credentials(BaseModel): name:str=Field("",max_length=80); email:str=Field(min_length=3,max_length=160); password:str=Field(min_length=6,max_length=100); invite_token:str=Field("",max_length=200)
+class PasswordResetRequest(BaseModel): email:str=Field(min_length=3,max_length=160)
+class PasswordResetConfirm(BaseModel): token:str=Field(min_length=20,max_length=200); password:str=Field(min_length=6,max_length=100)
 class HabitInput(BaseModel):
     name:str=Field(min_length=1,max_length=80); description:str=Field("",max_length=240); category:str=Field("Personal",max_length=40); schedule:str="daily"; priority:Literal["High","Medium","Low"]="Medium"; icon:str=Field("sparkles",max_length=12); color:str|None=None; start_date:date|None=None; end_date:date|None=None; target_days:int=Field(0,ge=0,le=3650); target_text:str=Field("",max_length=120); daily_target:float|None=Field(None,gt=0,le=1_000_000); target_unit:str=Field("",max_length=30); reminder_time:str=Field("",max_length=5)
     @field_validator("name", "category")
@@ -285,6 +290,16 @@ def invitation_for_token(s,token,include_inactive=False):
     if not invitation: return None
     if not include_inactive and (invitation.revoked_at is not None or invitation.expires_at<=utc_now()): return None
     return invitation
+def reset_hash(token): return sha256(token.encode("utf-8")).hexdigest()
+def password_reset_url(token): return f"{APP_URL}/?reset_token={token}"
+def send_password_reset_email(user,token):
+    """Send a reset link without exposing the token to the requesting browser."""
+    if not (EMAILJS_PUBLIC_KEY and EMAILJS_SERVICE_ID and EMAILJS_TEMPLATE_ID):
+        raise RuntimeError("Password reset email is not configured.")
+    link=password_reset_url(token)
+    payload={"service_id":EMAILJS_SERVICE_ID,"template_id":EMAILJS_TEMPLATE_ID,"user_id":EMAILJS_PUBLIC_KEY,"template_params":{"to_email":user.email,"email":user.email,"to_name":user.name,"subject":"Reset your Little Wins password","message":f"Use this secure link to reset your password. It expires in 30 minutes: {link}","habit_name":"your Little Wins account","notification_type":"password_reset","app_url":APP_URL,"reset_url":link}}
+    response=httpx.post("https://api.emailjs.com/api/v1.0/email/send",json=payload,timeout=10)
+    response.raise_for_status()
 @app.get("/health")
 def health(): return {"status":"ok"}
 @app.post("/auth/register")
@@ -304,6 +319,35 @@ def login(data:Credentials,s:Session=Depends(db)):
     token,expires=issue_token(); u.token=token; u.token_expires_at=expires
     if upgrade: u.password_hash=hash_password(data.password)
     s.commit(); return {"token":u.token,"expires_at":expires.isoformat()+"Z","user":{"name":u.name,**level(u.xp)}}
+@app.post("/auth/password-reset/request",status_code=202)
+def request_password_reset(data:PasswordResetRequest,s:Session=Depends(db)):
+    """Issue an email-only, short-lived reset link with enumeration-safe output."""
+    email=data.email.strip().lower(); user=s.query(User).filter_by(email=email).first()
+    message="If an account exists for that address, a password reset link has been sent. Check inbox and spam."
+    if not user: return {"message":message}
+    recent=s.query(PasswordReset).filter_by(user_id=user.id).filter(PasswordReset.created_at>utc_now()-timedelta(minutes=1)).first()
+    if recent: return {"message":message}
+    s.query(PasswordReset).filter_by(user_id=user.id,used_at=None).update({PasswordReset.used_at:utc_now()},synchronize_session=False)
+    token=token_urlsafe(32)
+    reset=PasswordReset(user_id=user.id,token_hash=reset_hash(token),expires_at=utc_now()+timedelta(minutes=30))
+    s.add(reset); s.commit()
+    try:
+        send_password_reset_email(user,token)
+    except (httpx.HTTPError, RuntimeError):
+        # Do not leave a usable token behind when delivery was not accepted.
+        reset.used_at=utc_now(); s.commit()
+    return {"message":message}
+@app.post("/auth/password-reset/confirm")
+def confirm_password_reset(data:PasswordResetConfirm,s:Session=Depends(db)):
+    reset=s.query(PasswordReset).filter_by(token_hash=reset_hash(data.token),used_at=None).first()
+    if not reset or reset.expires_at<=utc_now():
+        raise HTTPException(400,"This password reset link is invalid or has expired. Request a new one.")
+    user=s.query(User).filter_by(id=reset.user_id).first()
+    if not user: raise HTTPException(400,"This password reset link is invalid or has expired. Request a new one.")
+    user.password_hash=hash_password(data.password); reset.used_at=utc_now()
+    # Existing sessions are invalidated, including any session on a lost device.
+    token,_=issue_token(); user.token=token; user.token_expires_at=utc_now()
+    s.commit(); return {"message":"Password updated. You can now sign in with your new password."}
 @app.post("/auth/logout",status_code=204)
 def logout(u:User=Depends(auth),s:Session=Depends(db)):
     token,_=issue_token(); u.token=token; u.token_expires_at=utc_now(); s.commit()
