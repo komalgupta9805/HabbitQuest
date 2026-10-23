@@ -314,6 +314,20 @@ def test_persistent_goal_crud_progress_and_isolation():
     assert client.post(f"/goals/{created.json()['id']}/pause",headers=headers).json()["status"]=="paused"
     assert client.post(f"/goals/{created.json()['id']}/resume",headers=headers).json()["status"]=="active"
 
+def test_weekly_challenge_uses_scheduled_days_instead_of_a_fixed_target():
+    headers=register(); habit(headers,"Every day")
+    dashboard=client.get("/dashboard",headers=headers).json()
+    available_days=7-date.today().weekday()
+    assert dashboard["weekly_challenge"]["scheduled_days"]==available_days
+    assert dashboard["weekly_challenge"]["target"]==available_days
+
+    weekday=str(date.today().weekday())
+    selected=client.post("/habits",headers=headers,json={"name":"One-day habit","schedule":weekday}).json()
+    # The selected-weekday habit is included only when it occurs in this week;
+    # either way the target is derived from the actual schedule, never a magic 5.
+    refreshed=client.get("/dashboard",headers=headers).json()["weekly_challenge"]
+    assert refreshed["target"]==refreshed["scheduled_days"]
+
 def test_xp_ledger_records_award_and_one_reversal_only():
     headers=register(); item=habit(headers)
     client.post(f"/habits/{item['id']}/complete",headers=headers,json={})
@@ -485,6 +499,26 @@ def test_achievement_catalog_exposes_persisted_calculation_and_real_progress():
     assert first["calculation"]=="Persisted completed habit records"
     assert three_day["progress"]==1 and three_day["target"]==3
     assert three_day["calculation"]=="Best single-habit streak across scheduled days"
+
+def test_sample_history_keeps_incomplete_badges_out_of_earned_view():
+    headers=register("sample-achievements@example.com")
+    assert client.post("/demo/sample",headers=headers).status_code==200
+    # Simulate a legacy sample where awards had already been written before the
+    # visible sample streak was shortened for the presentation.
+    with SessionLocal() as session:
+        user=session.query(User).filter_by(email="sample-achievements@example.com").one()
+        demo_habit=session.query(Habit).filter_by(user_id=user.id,is_demo=1,name="Demo: practise DSA").one()
+        session.query(Completion).filter_by(user_id=user.id).delete()
+        for offset in range(6):
+            session.add(Completion(habit_id=demo_habit.id,user_id=user.id,completed_on=demo_habit.created_on+timedelta(days=offset)))
+        session.query(Achievement).filter_by(user_id=user.id).delete()
+        session.add_all([Achievement(user_id=user.id,code="seven_days"),Achievement(user_id=user.id,code="fourteen_days")])
+        session.commit()
+    catalog={item["code"]:item for item in client.get("/gamification/achievements",headers=headers).json()}
+    assert catalog["seven_days"]["progress"]==6
+    assert catalog["fourteen_days"]["progress"]==6
+    assert catalog["seven_days"]["display_unlocked"] is False
+    assert catalog["fourteen_days"]["display_unlocked"] is False
 
 def test_demo_reset_preserves_real_habits_and_completions():
     headers=register(); real=habit(headers,"My real habit")

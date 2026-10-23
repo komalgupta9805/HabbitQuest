@@ -5,7 +5,11 @@
 .goal-habit-picker { border: 1px solid #dce8df; border-radius: 16px; display: grid; gap: .65rem; margin: 1rem 0; padding: 1rem; }
 .goal-habit-picker legend { color: #31473a; font-weight: 800; padding: 0 .35rem; }
 .goal-habit-picker label { align-items: center; display: flex; gap: .55rem; }
+.goal-habit-picker input[type="checkbox"] { width: 18px !important; height: 18px; margin: 0 !important; flex: 0 0 auto; }
+.goal-habit-picker svg { flex: 0 0 auto; }
+.goal-habit-picker label { margin: .25rem 0 !important; }
 .goal-list-title { margin-top: 2rem; }
+.goal-explainer,.goal-period { color: #66746c; display: block; font-size: 11px; font-weight: 500; margin: .3rem 0 0; }
 .saved-goal { background: #f8fbf8; border: 1px solid #dce8df; border-radius: 16px; display: grid; gap: .7rem; margin: .8rem 0; padding: 1rem; }
 .saved-goal > div:first-child { display: flex; justify-content: space-between; gap: 1rem; }
 .saved-goal small { color: #66746c; }

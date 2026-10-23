@@ -232,17 +232,26 @@ ACHIEVEMENT_DEFS = [
 def achievement_catalog(s,u,today=None):
     total=count(s,u); best=max((streak(s,h,today)["longest"] for h in habits(s,u)),default=0)
     unlocked={a.code:a.unlocked_on for a in s.query(Achievement).filter_by(user_id=u.id)}
+    # Demo history is intentionally a snapshot of partly completed milestones.  Do
+    # not let an old demo award make an incomplete, visible sample badge appear in
+    # the Earned tab.  Real achievements remain permanent after an undo.
+    has_demo_history=bool(s.query(Habit.id).filter_by(user_id=u.id,is_demo=1).first())
     result=[]
     for definition in ACHIEVEMENT_DEFS:
         progress=total if definition["metric"]=="total" else best
         target=definition["target"]
         calculation = "Persisted completed habit records" if definition["metric"]=="total" else "Best single-habit streak across scheduled days"
-        result.append({**definition,"progress":min(progress,target),"remaining":max(0,target-progress),"calculation":calculation,"reward_xp":ACHIEVEMENT_XP[definition["code"]],"unlocked_on":unlocked.get(definition["code"]).isoformat() if unlocked.get(definition["code"]) else None})
+        unlocked_on=unlocked.get(definition["code"])
+        # `display_unlocked` is a presentation state only.  The persisted award
+        # and XP ledger are not changed by this compatibility handling.
+        display_unlocked=bool(unlocked_on) and (not has_demo_history or progress>=target)
+        result.append({**definition,"progress":min(progress,target),"remaining":max(0,target-progress),"calculation":calculation,"reward_xp":ACHIEVEMENT_XP[definition["code"]],"unlocked_on":unlocked_on.isoformat() if unlocked_on else None,"display_unlocked":display_unlocked})
     return result
-def achievements(s,u,today=None):
+def achievements(s,u,today=None,allowed_codes=None):
     total=count(s,u); best=max((streak(s,h,today)["longest"] for h in habits(s,u)),default=0); rules=[("first_step",total>=1),("three_days",best>=3),("seven_days",best>=7),("fourteen_days",best>=14),("thirty_completions",total>=30)]
     have={a.code for a in s.query(Achievement).filter_by(user_id=u.id)}
     for code,yes in rules:
+        if allowed_codes is not None and code not in allowed_codes: continue
         if yes and code not in have:
             s.add(Achievement(user_id=u.id,code=code,unlocked_on=today or date.today()))
             add_xp(s,u,"achievement",ACHIEVEMENT_XP[code],f"achievement:{code}",code,today or date.today())
@@ -544,14 +553,19 @@ def dashboard(u:User=Depends(auth),s:Session=Depends(db),today:date=Depends(clie
     heat=[]
     for i in range(69,-1,-1):
         d=today-timedelta(days=i); a,b=day_status(s,u,d); heat.append({"date":d.isoformat(),"completed":a,"scheduled":b,"intensity":round(100*a/b) if b else 0})
-    active=sum(day_status(s,u,start+timedelta(days=i))[0]>0 for i in range(today.weekday()+1))
-    return {"user":{"name":u.name,"leaderboard_opt_in":bool(u.leaderboard_opt_in),**level(u.xp)},"habits":[habit_out(s,h,today) for h in hs],"today":{"completed":done,"total":total,"bonus_claimed":bool(s.query(RewardClaim).filter_by(user_id=u.id,reward_key=f"daily_all:{today.isoformat()}").filter(RewardClaim.amount>0).first())},"overall_streak":overall(s,u,today),"overall_longest_streak":overall_longest(s,u,today),"weekly_consistency":period_status(s,u,start,today),"monthly_completion":period_status(s,u,month_start,today),"weekly_challenge":{"active_days":active,"target":5,"week_start":start.isoformat()},"heatmap":heat,"achievements":achievement_catalog(s,u,today)}
+    week_days=[start+timedelta(days=i) for i in range(7)]
+    scheduled_days=sum(day_status(s,u,day)[1]>0 for day in week_days)
+    active=sum(day_status(s,u,day)[0]>0 for day in week_days if day<=today)
+    # A weekly goal fits the user's actual week-long schedule—there is no
+    # arbitrary five-day target.
+    target=scheduled_days
+    return {"user":{"name":u.name,"leaderboard_opt_in":bool(u.leaderboard_opt_in),**level(u.xp)},"habits":[habit_out(s,h,today) for h in hs],"today":{"completed":done,"total":total,"bonus_claimed":bool(s.query(RewardClaim).filter_by(user_id=u.id,reward_key=f"daily_all:{today.isoformat()}").filter(RewardClaim.amount>0).first())},"overall_streak":overall(s,u,today),"overall_longest_streak":overall_longest(s,u,today),"weekly_consistency":period_status(s,u,start,today),"monthly_completion":period_status(s,u,month_start,today),"weekly_challenge":{"active_days":active,"target":target,"scheduled_days":scheduled_days,"week_start":start.isoformat(),"week_end":(start+timedelta(days=6)).isoformat()},"heatmap":heat,"achievements":achievement_catalog(s,u,today)}
 
 def goal_out(s,goal):
     habit_ids=[h.id for h in goal.habits]
     done=s.query(Completion).filter(Completion.user_id==goal.user_id,Completion.habit_id.in_(habit_ids),Completion.status=="complete",Completion.completed_on>=goal.start_on,Completion.completed_on<=goal.end_on).count() if habit_ids else 0
     target=goal.target_count; effective_status="expired" if goal.status=="active" and goal.end_on<date.today() else goal.status
-    return {"id":goal.id,"title":goal.title,"description":goal.description,"target_count":target,"start_on":goal.start_on.isoformat(),"end_on":goal.end_on.isoformat(),"status":effective_status,"habit_ids":habit_ids,"completed":done,"remaining":max(0,target-done),"percentage":min(100,round(100*done/target)),"milestones":[{"value":value,"reached":done>=value} for value in sorted({max(1,round(target*.25)),max(1,round(target*.5)),max(1,round(target*.75)),target})]}
+    return {"id":goal.id,"title":goal.title,"description":goal.description,"target_count":target,"start_on":goal.start_on.isoformat(),"end_on":goal.end_on.isoformat(),"status":effective_status,"habit_ids":habit_ids,"completed":done,"remaining":max(0,target-done),"percentage":min(100,round(100*done/target)),"counting_rule":"Completed check-ins from the selected habits, dated within this goal's start and end dates.","milestones":[{"value":value,"reached":done>=value} for value in sorted({max(1,round(target*.25)),max(1,round(target*.5)),max(1,round(target*.75)),target})]}
 def owned_goal(gid,u,s):
     goal=s.query(Goal).filter_by(id=gid,user_id=u.id).first()
     if not goal: raise HTTPException(404,"Goal not found.")
